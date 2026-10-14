@@ -51,6 +51,19 @@ npm run tauri dev -- -- track-one.wav track-two.mp3
 - **Export** — write the checked files as one summed stereo master mix, or each
   one to its own file (as the clip itself, without its start offset). WAV at
   16-bit, 24-bit or 32-bit float.
+- **Workspace** — one folder that holds your tunes and projects. It defaults to
+  `Documents/zwaveEditor`; pick another from the quick-tunes panel or either
+  project dialog and the choice is remembered. Switching does not move anything:
+  each folder keeps its own tunes and projects.
+- **Quick tunes** — the ♫ button opens a floating panel of sounds you reuse.
+  Adding files copies them into the workspace's `tunes/` folder; each one can be
+  auditioned with its own play/pause, or removed (which deletes the copy). Drag a
+  tune onto a track to join it before or after that track's audio, depending on
+  which half you drop it on, or anywhere else in the editor for a new track.
+- **Projects** — *Save project…* writes the session to
+  `projects/<name>/` in the workspace: every track's audio as it stands, edits
+  included, plus its mixer settings and start point. *Open project…* lists what
+  is saved there.
 - **Waveforms** — one lane per channel, min/max peaks with an RMS core, each
   track drawn at its true extent so you can see where a shorter file ends.
 - **Navigation** — ⌘/Ctrl + scroll to zoom, shift + scroll to pan, ⌥ + drag to
@@ -63,8 +76,9 @@ npm run tauri dev -- -- track-one.wav track-two.mp3
 
 ```
 src/                      React + TypeScript UI (this is what mobile will reuse)
-  components/             ImportScreen, SessionScreen, Timeline, TrackWaveform,
-                          TrackHeader, TransportBar, SessionMinimap
+  components/             SessionScreen, EmptySession, Timeline, TrackWaveform,
+                          TrackHeader, TransportBar, SessionMinimap,
+                          TunesPanel, ProjectDialog, WorkspaceBar
   lib/api.ts              the only place that calls into Rust
   lib/useTransport.ts     follows the engine's playhead
   lib/waveform.ts         canvas drawing and view maths
@@ -75,7 +89,9 @@ src-tauri/src/
   audio/edit.rs           delete, crop, copy and paste over sample buffers
   audio/export.rs         master rendering and WAV writing
   audio/mod.rs            ClipStore (decoded audio, undo history) and Clipboard
+  workspace.rs            the workspace folder: tunes library and saved projects
   commands.rs             import / peaks / mix / transport / edit / clipboard / export
+                          / workspace / tunes / projects
 ```
 
 The rule the project follows: **audio data never crosses into JavaScript.**
