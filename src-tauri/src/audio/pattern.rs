@@ -4,6 +4,7 @@
 //! Rendering is a plain function from a `Pattern` to a `DecodedAudio`, in the
 //! same shape as the edits in `edit.rs`, so it is testable without a device.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -44,6 +45,9 @@ pub struct PatternRow {
     /// MIDI note number, for tuned voices and for repitching samples (60 = as recorded).
     #[serde(default = "middle_c")]
     pub note: f32,
+    /// A note per step, for melodies. A missing or null entry plays `note`.
+    #[serde(default)]
+    pub step_notes: Vec<Option<f32>>,
     /// Each hit cuts the previous one off, like a single 808 or an open hat.
     #[serde(default)]
     pub choke: bool,
@@ -125,11 +129,10 @@ pub fn render(pattern: &Pattern) -> Result<DecodedAudio, String> {
         if row.muted || row.gain <= 0.0 || !row.steps.iter().any(|on| *on) {
             continue;
         }
-        let hit = row_hit(row)?;
         let gain = row.gain.clamp(0.0, 2.0);
 
-        // Every onset in the whole clip, in frames.
-        let mut starts: Vec<usize> = Vec::new();
+        // Every onset in the whole clip, in frames, with the note it plays.
+        let mut starts: Vec<(usize, f32)> = Vec::new();
         for repeat in 0..pattern.bars as usize {
             for (index, on) in row.steps.iter().enumerate() {
                 if !on {
@@ -138,17 +141,24 @@ pub fn render(pattern: &Pattern) -> Result<DecodedAudio, String> {
                 let step_index = repeat * cycle + index;
                 let swung = if index % 2 == 1 { swing * step * 0.5 } else { 0.0 };
                 let seconds = step_index as f64 * step + swung;
-                starts.push(((seconds * rate).round() as usize) % total);
+                let note = row.step_notes.get(index).copied().flatten().unwrap_or(row.note);
+                starts.push((((seconds * rate).round() as usize) % total, note));
             }
         }
-        starts.sort_unstable();
-        starts.dedup();
+        starts.sort_unstable_by_key(|(start, _)| *start);
+        starts.dedup_by_key(|(start, _)| *start);
 
+        // Each distinct note is rendered (or decoded and repitched) once.
+        let mut hits: HashMap<u32, Hit> = HashMap::new();
         let fade = (CHOKE_FADE_SECONDS * rate) as usize;
-        for (k, &start) in starts.iter().enumerate() {
+        for (k, &(start, note)) in starts.iter().enumerate() {
+            let hit = match hits.entry(note.to_bits()) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(row_hit(row, note)?),
+            };
             // A choked hit plays until the next onset (wrapping), then fades.
             let limit = if row.choke && starts.len() > 1 {
-                let next = starts.get(k + 1).copied().unwrap_or(starts[0] + total);
+                let next = starts.get(k + 1).map(|(s, _)| *s).unwrap_or(starts[0].0 + total);
                 (next - start + fade).min(hit.frames())
             } else if row.choke {
                 hit.frames().min(total)
@@ -199,10 +209,10 @@ impl Hit {
     }
 }
 
-fn row_hit(row: &PatternRow) -> Result<Hit, String> {
+fn row_hit(row: &PatternRow, note: f32) -> Result<Hit, String> {
     match &row.sound {
         RowSound::Synth { voice } => {
-            let mono = synth::render(*voice, row.note, PATTERN_RATE);
+            let mono = synth::render(*voice, note, PATTERN_RATE);
             Ok(Hit {
                 left: mono.clone(),
                 right: mono,
@@ -216,7 +226,7 @@ fn row_hit(row: &PatternRow) -> Result<Hit, String> {
                     .unwrap_or_else(|| path.clone());
                 format!("could not load {name}: {e}")
             })?;
-            Ok(resample_hit(&audio, row.note))
+            Ok(resample_hit(&audio, note))
         }
     }
 }
@@ -253,6 +263,7 @@ mod tests {
             steps,
             gain: 1.0,
             note: 45.0,
+            step_notes: Vec::new(),
             choke: false,
             muted: false,
         }
@@ -371,13 +382,41 @@ mod tests {
                 {"id": "r1", "label": "Kick", "sound": {"kind": "synth", "voice": "kick"},
                  "steps": [true,false,false,false], "gain": 0.9, "note": 36, "choke": false},
                 {"sound": {"kind": "sample", "path": "/tmp/x.wav", "name": "x.wav"},
-                 "steps": [false,true]}
+                 "steps": [false,true]},
+                {"sound": {"kind": "synth", "voice": "piano"},
+                 "steps": [true,true], "note": 60, "stepNotes": [null, 64]}
             ]
         }"#;
         let p: Pattern = serde_json::from_str(json).unwrap();
-        assert_eq!(p.rows.len(), 2);
+        assert_eq!(p.rows.len(), 3);
         assert!(matches!(p.rows[0].sound, RowSound::Synth { voice: Voice::Kick }));
         assert!(matches!(p.rows[1].sound, RowSound::Sample { .. }));
         assert_eq!(p.rows[1].note, 60.0);
+        assert_eq!(p.rows[2].step_notes, vec![None, Some(64.0)]);
+    }
+
+    #[test]
+    fn each_step_plays_its_own_note() {
+        let quiet = |mut r: PatternRow| {
+            r.gain = 0.3;
+            r
+        };
+        let mut melody = quiet(row(Voice::Marimba, &[0, 8]));
+        melody.note = 57.0;
+        melody.step_notes = vec![None; 16];
+        melody.step_notes[8] = Some(69.0);
+
+        let mut first = quiet(row(Voice::Marimba, &[0]));
+        first.note = 57.0;
+        let mut second = quiet(row(Voice::Marimba, &[8]));
+        second.note = 69.0;
+
+        let both = render(&pattern(vec![melody], 1)).unwrap();
+        let apart = render(&pattern(vec![first, second], 1)).unwrap();
+        let worst = both.channels[0]
+            .iter()
+            .zip(&apart.channels[0])
+            .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 1e-5, "differs by {worst}");
     }
 }

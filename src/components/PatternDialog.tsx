@@ -6,8 +6,10 @@ import {
   noteRange,
   rowIsTuned,
   STEPS_PER_BAR,
+  stepNote,
   synthRow,
-  VOICES,
+  transposeRow,
+  VOICE_GROUPS,
   voiceInfo,
 } from "../lib/beat";
 import type { Pattern, PatternRow, SynthVoice } from "../types";
@@ -80,17 +82,59 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
     }));
   }, []);
 
+  /**
+   * Turns a step on or off. On a tuned row, a step turned on takes the row's
+   * note (the "brush"), so picking a note and painting writes a melody.
+   */
   const setStep = useCallback((id: string, index: number, value: boolean) => {
     setPattern((current) => ({
       ...current,
       rows: current.rows.map((row) => {
-        if (row.id !== id || row.steps[index] === value) return row;
+        if (row.id !== id) return row;
+        const tuned = rowIsTuned(row);
+        const note = value && tuned ? row.note : null;
+        const sameNote = !tuned || (row.stepNotes?.[index] ?? null) === note;
+        if (row.steps[index] === value && sameNote) return row;
         const steps = [...row.steps];
         steps[index] = value;
-        return { ...row, steps };
+        if (!tuned) return { ...row, steps };
+        const stepNotes = row.steps.map((_, i) => row.stepNotes?.[i] ?? null);
+        stepNotes[index] = note;
+        return { ...row, steps, stepNotes };
       }),
     }));
   }, []);
+
+  /** Moves one step's note by `semitones`, within the row's range. */
+  const nudgeStep = useCallback((id: string, index: number, semitones: number) => {
+    setPattern((current) => ({
+      ...current,
+      rows: current.rows.map((row) => {
+        if (row.id !== id || !row.steps[index] || !rowIsTuned(row)) return row;
+        const [low, high] = noteRange(row);
+        const note = Math.min(high, Math.max(low, stepNote(row, index) + semitones));
+        const stepNotes = row.steps.map((_, i) => row.stepNotes?.[i] ?? null);
+        stepNotes[index] = note;
+        return { ...row, stepNotes };
+      }),
+    }));
+  }, []);
+
+  // The wheel nudges a step's note. React's wheel handler is passive, so this
+  // listens natively to stop the grid scrolling at the same time.
+  const grid = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = grid.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      const step = (event.target as HTMLElement).closest<HTMLElement>("[data-nudge]");
+      if (!step || event.deltaY === 0) return;
+      event.preventDefault();
+      nudgeStep(step.dataset.row!, Number(step.dataset.step), event.deltaY < 0 ? 1 : -1);
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, [nudgeStep]);
 
   const changeSound = async (row: PatternRow, value: string) => {
     if (value === SAMPLE_OPTION) {
@@ -98,7 +142,11 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
         const [path] = await pickAudioFiles();
         if (!path) return;
         const name = path.split(/[\\/]/).pop() ?? path;
-        updateRow(row.id, { sound: { kind: "sample", path, name }, note: 60, choke: false });
+        updateRow(row.id, {
+          sound: { kind: "sample", path, name },
+          ...transposeRow(row, 60 - row.note),
+          choke: false,
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -107,13 +155,15 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
     const info = voiceInfo(value as SynthVoice);
     updateRow(row.id, {
       sound: { kind: "synth", voice: info.voice },
-      note: info.note,
+      // Shift the whole row, so a melody keeps its shape in the new register.
+      ...transposeRow(row, info.note - row.note),
       choke: info.choke,
+      gain: info.gain,
     });
   };
 
   const addRow = () =>
-    setPattern((current) => ({ ...current, rows: [...current.rows, synthRow("chime")] }));
+    setPattern((current) => ({ ...current, rows: [...current.rows, synthRow("piano")] }));
 
   const removeRow = (id: string) =>
     setPattern((current) => ({ ...current, rows: current.rows.filter((row) => row.id !== id) }));
@@ -121,7 +171,11 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
   const clearAll = () =>
     setPattern((current) => ({
       ...current,
-      rows: current.rows.map((row) => ({ ...row, steps: row.steps.map(() => false) })),
+      rows: current.rows.map((row) => ({
+        ...row,
+        steps: row.steps.map(() => false),
+        stepNotes: undefined,
+      })),
     }));
 
   const hasHits = pattern.rows.some((row) => !row.muted && row.steps.some(Boolean));
@@ -209,7 +263,7 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
         {error && <p className="modal__error pattern__error">{error}</p>}
 
         <div className="pattern__grid-scroll">
-          <div className="pattern__grid">
+          <div className="pattern__grid" ref={grid}>
             {pattern.rows.map((row) => (
               <div key={row.id} className={`pattern__row${row.muted ? " pattern__row--muted" : ""}`}>
                 <div className="pattern__row-head">
@@ -220,10 +274,14 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
                     title={row.sound.kind === "sample" ? row.sound.path : undefined}
                     aria-label="Sound"
                   >
-                    {VOICES.map((info) => (
-                      <option key={info.voice} value={info.voice}>
-                        {info.label}
-                      </option>
+                    {VOICE_GROUPS.map(({ group, voices }) => (
+                      <optgroup key={group} label={group}>
+                        {voices.map((info) => (
+                          <option key={info.voice} value={info.voice}>
+                            {info.label}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                     <option value={SAMPLE_OPTION}>
                       {row.sound.kind === "sample" ? `File: ${row.sound.name}` : "Load sample…"}
@@ -235,7 +293,11 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
                       className="pattern__note"
                       value={row.note}
                       onChange={(event) => updateRow(row.id, { note: Number(event.target.value) })}
-                      title={row.sound.kind === "sample" ? "Pitch (C4 plays it as recorded)" : "Note"}
+                      title={
+                        row.sound.kind === "sample"
+                          ? "Note for new steps (C4 plays the sample as recorded)"
+                          : "Note for new steps"
+                      }
                       aria-label="Note"
                     >
                       {noteOptions(row).map((note) => (
@@ -290,28 +352,49 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
                 </div>
 
                 <div className="pattern__steps">
-                  {row.steps.map((on, index) => (
-                    <button
-                      key={index}
-                      type="button"
-                      className={`pattern__step${on ? " pattern__step--on" : ""}${
-                        index % 4 === 0 ? " pattern__step--beat" : ""
-                      }`}
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        // Touch pointers capture themselves; release so the
-                        // drag can paint the neighbouring steps.
-                        event.currentTarget.releasePointerCapture?.(event.pointerId);
-                        paint.current = !on;
-                        setStep(row.id, index, !on);
-                      }}
-                      onPointerEnter={() => {
-                        if (paint.current !== null) setStep(row.id, index, paint.current);
-                      }}
-                      aria-label={`Step ${index + 1}`}
-                      aria-pressed={on}
-                    />
-                  ))}
+                  {row.steps.map((on, index) => {
+                    const tuned = rowIsTuned(row);
+                    const note = stepNote(row, index);
+                    const melodic = on && tuned;
+                    return (
+                      <button
+                        key={index}
+                        type="button"
+                        className={`pattern__step${on ? " pattern__step--on" : ""}${
+                          index % 4 === 0 ? " pattern__step--beat" : ""
+                        }`}
+                        data-nudge={melodic ? "" : undefined}
+                        data-row={row.id}
+                        data-step={index}
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          // Touch pointers capture themselves; release so the
+                          // drag can paint the neighbouring steps.
+                          event.currentTarget.releasePointerCapture?.(event.pointerId);
+                          // A lit step on another note takes the brush note
+                          // instead of switching off.
+                          const value = melodic && note !== row.note ? true : !on;
+                          paint.current = value;
+                          setStep(row.id, index, value);
+                        }}
+                        onPointerEnter={() => {
+                          if (paint.current !== null) setStep(row.id, index, paint.current);
+                        }}
+                        onKeyDown={(event) => {
+                          if (!melodic) return;
+                          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                            event.preventDefault();
+                            nudgeStep(row.id, index, event.key === "ArrowUp" ? 1 : -1);
+                          }
+                        }}
+                        title={melodic ? `${noteName(note)} · scroll or ↑/↓ to change` : undefined}
+                        aria-label={melodic ? `Step ${index + 1}, ${noteName(note)}` : `Step ${index + 1}`}
+                        aria-pressed={on}
+                      >
+                        {melodic ? noteName(note) : null}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -330,7 +413,8 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
             + Row
           </button>
           <span className="pattern__hint">
-            Click or drag across steps · {STEPS_PER_BAR} steps = 1 bar · tails wrap so the clip loops
+            Click or drag across steps · on instruments, pick a note then paint; scroll a step to
+            change its note · {STEPS_PER_BAR} steps = 1 bar
           </span>
           <div className="pattern__footer-actions">
             <button type="button" className="btn btn--secondary" onClick={onClose} disabled={busy}>

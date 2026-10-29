@@ -125,7 +125,21 @@ export type SynthVoice =
   | "clap"
   | "closedHat"
   | "openHat"
-  | "chime";
+  | "chime"
+  | "rim"
+  | "tom"
+  | "shaker"
+  | "cowbell"
+  | "piano"
+  | "electricPiano"
+  | "guitar"
+  | "bass"
+  | "organ"
+  | "strings"
+  | "brass"
+  | "flute"
+  | "marimba"
+  | "synthLead";
 
 export type RowSound =
   | { kind: "synth"; voice: SynthVoice }
@@ -137,7 +151,12 @@ export interface PatternRow {
   /** One per sixteenth note. */
   steps: boolean[];
   gain: number;
-  /** MIDI note: pitch for the 808 and chime; for samples, 60 plays them as recorded. */
+  /**
+   * A note per step, for melodies on tuned rows. A missing or null entry
+   * plays `note`.
+   */
+  stepNotes?: (number | null)[];
+  /** MIDI note: pitch for tuned voices (808, tom, instruments); for samples, 60 plays them as recorded. */
   note: number;
   /** Each hit cuts off the one before. */
   choke: boolean;

@@ -1611,6 +1611,10 @@ button:disabled {
 }
 
 .pattern__steps .pattern__step--on {
+  color: #2a1a04;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   background: #e8a33d;
   border-color: #f5cd8c;
   box-shadow: 0 0 8px rgba(232, 163, 61, 0.45);

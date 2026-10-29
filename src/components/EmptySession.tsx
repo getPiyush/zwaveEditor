@@ -64,7 +64,7 @@ export function EmptySession({
         <button type="button" className="empty__pattern" onClick={onNewPattern}>
           <span className="empty__pattern-title">Start a beat</span>
           <span className="empty__pattern-hint">
-            Program drums, 808s and chimes on a step grid — no files needed
+            Program drums, 808s, piano, guitar and more on a step grid — no files needed
           </span>
         </button>
       )}

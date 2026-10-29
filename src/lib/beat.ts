@@ -89,24 +89,51 @@ export function clampBpm(bpm: number): number {
 
 // ---------- Built-in voices ----------
 
+export type VoiceGroup = "Drums" | "Instruments";
+
 export interface VoiceInfo {
   voice: SynthVoice;
   label: string;
+  group: VoiceGroup;
   /** Default MIDI note for tuned voices. */
   note: number;
   tuned: boolean;
   choke: boolean;
+  /** Row volume a new row starts at, so sustained voices don't bury the drums. */
+  gain: number;
+  /** The notes offered, in the instrument's natural register. */
+  range: [number, number];
 }
 
+const DRUM_RANGE: [number, number] = [36, 84];
+
 export const VOICES: VoiceInfo[] = [
-  { voice: "kick", label: "Kick", note: 36, tuned: false, choke: false },
-  { voice: "bass808", label: "808", note: 33, tuned: true, choke: true },
-  { voice: "snare", label: "Snare", note: 38, tuned: false, choke: false },
-  { voice: "clap", label: "Clap", note: 39, tuned: false, choke: false },
-  { voice: "closedHat", label: "Hat", note: 42, tuned: false, choke: false },
-  { voice: "openHat", label: "Open hat", note: 46, tuned: false, choke: true },
-  { voice: "chime", label: "Chime", note: 76, tuned: true, choke: false },
+  { voice: "kick", label: "Kick", group: "Drums", note: 36, tuned: false, choke: false, gain: 0.9, range: DRUM_RANGE },
+  { voice: "bass808", label: "808", group: "Drums", note: 33, tuned: true, choke: true, gain: 0.9, range: [24, 52] },
+  { voice: "snare", label: "Snare", group: "Drums", note: 38, tuned: false, choke: false, gain: 0.9, range: DRUM_RANGE },
+  { voice: "clap", label: "Clap", group: "Drums", note: 39, tuned: false, choke: false, gain: 0.9, range: DRUM_RANGE },
+  { voice: "rim", label: "Rim", group: "Drums", note: 37, tuned: false, choke: false, gain: 0.6, range: DRUM_RANGE },
+  { voice: "tom", label: "Tom", group: "Drums", note: 45, tuned: true, choke: false, gain: 0.75, range: [36, 60] },
+  { voice: "closedHat", label: "Hat", group: "Drums", note: 42, tuned: false, choke: false, gain: 0.55, range: DRUM_RANGE },
+  { voice: "openHat", label: "Open hat", group: "Drums", note: 46, tuned: false, choke: true, gain: 0.55, range: DRUM_RANGE },
+  { voice: "shaker", label: "Shaker", group: "Drums", note: 70, tuned: false, choke: false, gain: 0.45, range: DRUM_RANGE },
+  { voice: "cowbell", label: "Cowbell", group: "Drums", note: 56, tuned: false, choke: false, gain: 0.45, range: DRUM_RANGE },
+  { voice: "piano", label: "Piano", group: "Instruments", note: 60, tuned: true, choke: false, gain: 0.55, range: [36, 96] },
+  { voice: "electricPiano", label: "Electric piano", group: "Instruments", note: 60, tuned: true, choke: false, gain: 0.5, range: [36, 88] },
+  { voice: "guitar", label: "Guitar", group: "Instruments", note: 52, tuned: true, choke: false, gain: 0.6, range: [40, 84] },
+  { voice: "bass", label: "Bass guitar", group: "Instruments", note: 40, tuned: true, choke: true, gain: 0.8, range: [28, 55] },
+  { voice: "organ", label: "Organ", group: "Instruments", note: 60, tuned: true, choke: true, gain: 0.4, range: [36, 88] },
+  { voice: "strings", label: "Strings", group: "Instruments", note: 60, tuned: true, choke: false, gain: 0.4, range: [36, 88] },
+  { voice: "brass", label: "Brass", group: "Instruments", note: 58, tuned: true, choke: true, gain: 0.45, range: [40, 80] },
+  { voice: "flute", label: "Flute", group: "Instruments", note: 72, tuned: true, choke: true, gain: 0.45, range: [60, 96] },
+  { voice: "marimba", label: "Marimba", group: "Instruments", note: 64, tuned: true, choke: false, gain: 0.55, range: [45, 96] },
+  { voice: "synthLead", label: "Synth lead", group: "Instruments", note: 67, tuned: true, choke: true, gain: 0.35, range: [48, 91] },
+  { voice: "chime", label: "Chime", group: "Instruments", note: 76, tuned: true, choke: false, gain: 0.45, range: [55, 96] },
 ];
+
+export const VOICE_GROUPS: { group: VoiceGroup; voices: VoiceInfo[] }[] = (
+  ["Drums", "Instruments"] as const
+).map((group) => ({ group, voices: VOICES.filter((info) => info.group === group) }));
 
 export function voiceInfo(voice: SynthVoice): VoiceInfo {
   return VOICES.find((info) => info.voice === voice) ?? VOICES[0];
@@ -121,11 +148,23 @@ export function rowIsTuned(row: PatternRow): boolean {
   return row.sound.kind === "sample" || voiceInfo(row.sound.voice).tuned;
 }
 
-/** The note range offered for a row: bass register for the 808, bells up high. */
+/** The note range offered for a row: each voice's natural register. */
 export function noteRange(row: PatternRow): [number, number] {
   if (row.sound.kind === "sample") return [36, 84];
-  if (row.sound.voice === "bass808") return [24, 52];
-  return [55, 96];
+  return voiceInfo(row.sound.voice).range;
+}
+
+/** The note a step plays: its own, or the row's. */
+export function stepNote(row: PatternRow, index: number): number {
+  return row.stepNotes?.[index] ?? row.note;
+}
+
+/** Moves every note in a row by `semitones`, so a melody survives a change of sound. */
+export function transposeRow(row: PatternRow, semitones: number): Pick<PatternRow, "note" | "stepNotes"> {
+  return {
+    note: row.note + semitones,
+    stepNotes: row.stepNotes?.map((note) => (note === null ? null : note + semitones)),
+  };
 }
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -153,7 +192,7 @@ export function synthRow(voice: SynthVoice, on: number[] = []): PatternRow {
     id: newRowId(),
     sound: { kind: "synth", voice },
     steps: steps(on),
-    gain: voice === "closedHat" || voice === "openHat" ? 0.55 : voice === "chime" ? 0.45 : 0.9,
+    gain: info.gain,
     note: info.note,
     choke: info.choke,
     muted: false,

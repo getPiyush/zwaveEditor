@@ -44,8 +44,12 @@ The mode and the beat settings are remembered between launches (`localStorage` k
 3. **Master bus**: master volume plus a brickwall limiter (−0.5 dBFS). It is applied identically in playback and in the master export, so a busy session no longer clips.
 4. **Pattern maker**: open it with **+ New pattern** in the toolbar, or **Start a beat** on the empty screen.
    - 16 steps = 1 bar of sixteenth notes; click or drag across steps to paint them.
-   - Built-in voices: Kick, 808, Snare, Clap, Hat, Open hat, Chime.
-   - Each row has volume, a note (808 and Chime), **C** (choke: each hit cuts off the last, good for 808s and open hats) and **M** (mute).
+   - Built-in voices, grouped in the sound menu:
+     - **Drums:** Kick, 808, Snare, Clap, Rim, Tom, Hat, Open hat, Shaker, Cowbell.
+     - **Instruments:** Piano, Electric piano, Guitar, Bass guitar, Organ, Strings, Brass, Flute, Marimba, Synth lead, Chime.
+   - **Melodies:** on a tuned row the note menu is a brush. Pick a note, then paint steps; each lit step shows and plays its own note. Click a lit step on a different note to move it to the brush note, or scroll over it (or press ↑/↓) to nudge it a semitone. Changing a row's sound transposes the whole melody.
+   - For chords, stack rows on the same steps. **+ Row** starts a Piano row.
+   - Each row has volume, a note (808, Tom and every instrument), **C** (choke: each hit cuts off the last, good for 808s and open hats) and **M** (mute).
    - Any row can use **Load sample…** to play your own file instead (C4 plays it as recorded).
    - Length is 1–16 bars, and swing goes from 0 to 60%.
    - **Preview loop** plays the pattern on its own while you edit it.
@@ -63,7 +67,7 @@ The default pattern is a boom-bap starter at 90 BPM: kick on steps 1, 8 and 11, 
 | File | What it does |
 |---|---|
 | `audio/master.rs` | `MasterBus` (gain + limiter flag) and `Limiter` (stereo-linked, instant attack, 150 ms release). The default is transparent. |
-| `audio/synth.rs` | The voices. Kick: pitch-swept sine. 808: tuned sine with a glide and saturation. Snare: tone plus high-passed noise. Clap: three noise bursts plus a tail. Hats: six-square "808 metal" plus noise. Chime: FM bell. Deterministic noise, normalised to a 0.9 peak. |
+| `audio/synth.rs` | The voices. Kick: pitch-swept sine. 808: tuned sine with a glide and saturation. Snare: tone plus high-passed noise. Clap: three noise bursts plus a tail. Hats: six-square "808 metal" plus noise. Chime: FM bell. Piano: inharmonic additive partials plus hammer noise. Electric piano: 1:1 FM plus a tine. Guitar and bass: Karplus-Strong plucked string. Organ: drawbars. Strings: three detuned saws, lowpassed. Brass: saw with an opening filter. Flute: sine plus breath noise. Marimba: 1×/4×/9.8× partials. Synth lead: square plus saw. Deterministic noise, normalised to a 0.9 peak. |
 | `audio/pattern.rs` | `Pattern` → stereo clip at 44.1 kHz. Handles swing, choke (with a 6 ms fade), tail wrap-around and a 0.98 ceiling. |
 | `audio/engine.rs` | `Mixer::fill_with` applies the master bus. A **pattern loop** (`set_pattern_loop`) plays through the master. It is separate from main's quick-tunes preview (`start_preview` / `fill_preview`). |
 | `audio/export.rs` | `render_master_with` uses the same master bus as playback. |
