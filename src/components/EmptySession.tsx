@@ -1,50 +1,32 @@
 import { SUPPORTED_EXTENSIONS } from "../lib/api";
-import { isRunningInTauri } from "../lib/tauri";
-import type { AppMode } from "../types";
-import { ModeSwitch } from "./ModeSwitch";
 
 interface Props {
-  onBrowse: () => void;
+  onRecord: () => void;
+  onAddFiles: () => void;
+  canRecord: boolean;
   isDragging: boolean;
   isImporting: boolean;
   importingName: string | null;
-  error: string | null;
-  mode: AppMode;
-  onModeChange: (mode: AppMode) => void;
-  /** Beat mode: start from an empty session with a pattern, no files needed. */
-  onNewPattern: () => void;
+  /** Beat mode only: start a session from a step pattern, no files needed. */
+  onNewPattern?: () => void;
 }
 
-export function ImportScreen({
-  onBrowse,
+/** What the session shows before it has any tracks. */
+export function EmptySession({
+  onRecord,
+  onAddFiles,
+  canRecord,
   isDragging,
   isImporting,
   importingName,
-  error,
-  mode,
-  onModeChange,
   onNewPattern,
 }: Props) {
   return (
-    <div className="import">
-      <div className="import__mode">
-        <ModeSwitch mode={mode} onChange={onModeChange} />
-      </div>
-
-      {!isRunningInTauri() && (
-        <div className="import__brand">
-          <h1>zwaveEditor</h1>
-          <p>Open sound files to see their waveforms and play them together.</p>
-        </div>
-      )}
-
-      <button
-        type="button"
+    <div className="empty">
+      <div
         className={`dropzone${isDragging ? " dropzone--active" : ""}${
           isImporting ? " dropzone--busy" : ""
         }`}
-        onClick={onBrowse}
-        disabled={isImporting}
       >
         {isImporting ? (
           <>
@@ -56,30 +38,36 @@ export function ImportScreen({
           <>
             <WaveIcon />
             <span className="dropzone__title">
-              {isDragging ? "Drop to open" : "Drop audio files here"}
+              {isDragging ? "Drop to open" : "Record, or drop audio files here"}
             </span>
             <span className="dropzone__hint">
-              or click to browse — pick several to play them in parallel
+              press R to record — add several files to play them in parallel
             </span>
+            <div className="dropzone__actions">
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={onRecord}
+                disabled={!canRecord}
+              >
+                Record
+              </button>
+              <button type="button" className="btn" onClick={onAddFiles}>
+                Add files…
+              </button>
+            </div>
           </>
         )}
-      </button>
+      </div>
 
-      {mode === "beat" && (
-        <button
-          type="button"
-          className="import__pattern"
-          onClick={onNewPattern}
-          disabled={isImporting}
-        >
-          <span className="import__pattern-title">Start a beat</span>
-          <span className="import__pattern-hint">
+      {onNewPattern && !isImporting && (
+        <button type="button" className="empty__pattern" onClick={onNewPattern}>
+          <span className="empty__pattern-title">Start a beat</span>
+          <span className="empty__pattern-hint">
             Program drums, 808s and chimes on a step grid — no files needed
           </span>
         </button>
       )}
-
-      {error && <p className="import__error">{error}</p>}
 
       <div className="formats">
         <span className="formats__label">Supported</span>

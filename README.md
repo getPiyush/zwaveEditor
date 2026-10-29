@@ -51,6 +51,19 @@ npm run tauri dev -- -- track-one.wav track-two.mp3
 - **Export** — write the checked files as one summed stereo master mix, or each
   one to its own file (as the clip itself, without its start offset). WAV at
   16-bit, 24-bit or 32-bit float.
+- **Workspace** — one folder that holds your tunes and projects. It defaults to
+  `Documents/zwaveEditor`; pick another from the quick-tunes panel or either
+  project dialog and the choice is remembered. Switching does not move anything:
+  each folder keeps its own tunes and projects.
+- **Quick tunes** — the ♫ button opens a floating panel of sounds you reuse.
+  Adding files copies them into the workspace's `tunes/` folder; each one can be
+  auditioned with its own play/pause, or removed (which deletes the copy). Drag a
+  tune onto a track to join it before or after that track's audio, depending on
+  which half you drop it on, or anywhere else in the editor for a new track.
+- **Projects** — *Save project…* writes the session to
+  `projects/<name>/` in the workspace: every track's audio as it stands, edits
+  included, plus its mixer settings and start point. *Open project…* lists what
+  is saved there.
 - **Waveforms** — one lane per channel, min/max peaks with an RMS core, each
   track drawn at its true extent so you can see where a shorter file ends.
 - **Navigation** — ⌘/Ctrl + scroll to zoom, shift + scroll to pan, ⌥ + drag to
@@ -61,14 +74,14 @@ npm run tauri dev -- -- track-one.wav track-two.mp3
 
 ## Beat mode
 
-A switch in the header (and on the start screen) flips between **Editor**, the app exactly as described above, and **Beat**, which adds tools for making music. Switching back to Editor restores the original behaviour: no grid, no snapping, and the mix is summed exactly as before. The mode and the beat settings are remembered between launches.
+A switch in the header flips between **Editor**, the app exactly as described above, and **Beat**, which adds tools for making music. Switching back to Editor restores the original behaviour: no grid, no snapping, and the mix is summed exactly as before. The mode and the beat settings are remembered between launches.
 
 Beat mode adds:
 
 - **Tempo and grid** — set the BPM; the ruler counts bars instead of seconds, and bar/beat lines are drawn across every lane. The toolbar shows the playhead as `bar.beat.sixteenth`.
 - **Snap** — bar, beat, 1/8 or 1/16 (or off). Clicking to seek, drag-selecting and ⌘/Ctrl-dragging a track all land on the grid.
 - **Master bus** — a master volume and a brickwall limiter on the summed mix, applied identically in playback and in the master export, so a dense session no longer clips.
-- **Pattern maker** — a 16-step grid of built-in synthesised voices (kick, 808, snare, clap, hat, open hat, chime), each row with its own volume, note (808 and chime), choke and mute. Any row can load a sample file instead. Set the length in bars and the swing, audition it with **Preview loop** (edits are heard live), then **Add to session**: it is rendered to an ordinary clip at the start of the bar the playhead is in. Sounds that ring past the end wrap round to the start, so the clip loops seamlessly with Repeat or paste. The ▦ button on a pattern track reopens its grid.
+- **Pattern maker** — a 16-step grid of built-in synthesised voices (kick, 808, snare, clap, hat, open hat, chime), each row with its own volume, note (808 and chime), choke and mute. Any row can load a sample file instead. Set the length in bars and the swing, audition it with **Preview loop** (edits are heard live), then **Add to session**: it is rendered to an ordinary clip at the start of the bar the playhead is in. Sounds that ring past the end wrap round to the start, so the clip loops seamlessly with Repeat or paste. The ▦ button on a pattern track reopens its grid. With no tracks open, **Start a beat** goes straight to the grid. (Saved projects keep a pattern's audio but not its grid yet, so a reopened project's pattern tracks can't be re-edited.)
 
 The voices are generated in `audio/synth.rs` — no sample files ship with the app, so there is nothing to license.
 
@@ -76,8 +89,9 @@ The voices are generated in `audio/synth.rs` — no sample files ship with the a
 
 ```
 src/                      React + TypeScript UI (this is what mobile will reuse)
-  components/             ImportScreen, SessionScreen, Timeline, TrackWaveform,
-                          TrackHeader, TransportBar, SessionMinimap
+  components/             SessionScreen, EmptySession, Timeline, TrackWaveform,
+                          TrackHeader, TransportBar, SessionMinimap,
+                          TunesPanel, ProjectDialog, WorkspaceBar
   lib/api.ts              the only place that calls into Rust
   lib/useTransport.ts     follows the engine's playhead
   lib/waveform.ts         canvas drawing and view maths
@@ -91,7 +105,9 @@ src-tauri/src/
   audio/synth.rs          built-in drum and chime voices (beat mode)
   audio/pattern.rs        step pattern -> clip renderer (beat mode)
   audio/mod.rs            ClipStore (decoded audio, undo history) and Clipboard
+  workspace.rs            the workspace folder: tunes library and saved projects
   commands.rs             import / peaks / mix / transport / edit / clipboard / export
+                          / workspace / tunes / projects
 ```
 
 The rule the project follows: **audio data never crosses into JavaScript.**

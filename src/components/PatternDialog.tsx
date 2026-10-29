@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { pickAudioFiles, previewPattern, stopPreview } from "../lib/api";
+import { pickAudioFiles, previewPattern, stopPatternPreview } from "../lib/api";
 import {
   noteName,
   noteRange,
@@ -66,10 +66,10 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
   }, [pattern, previewing]);
 
   // Whatever happens, leaving the dialog silences the preview.
-  useEffect(() => () => void stopPreview().catch(() => {}), []);
+  useEffect(() => () => void stopPatternPreview().catch(() => {}), []);
 
   const togglePreview = useCallback(() => {
-    if (previewing) void stopPreview().catch(() => {});
+    if (previewing) void stopPatternPreview().catch(() => {});
     setPreviewing((on) => !on);
   }, [previewing]);
 

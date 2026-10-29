@@ -8,8 +8,12 @@ import type {
   MasterBus,
   Pattern,
   PeakData,
+  PreviewState,
+  ProjectSummary,
   Track,
   TransportState,
+  TuneInfo,
+  WorkspaceInfo,
 } from "../types";
 
 /**
@@ -273,6 +277,71 @@ export function invertRange(clipId: number, start: number, end: number): Promise
   return invoke<ClipInfo>("invert_range", { clipId, startSecs: start, endSecs: end });
 }
 
+/** Joins a whole audio file onto a clip, before its start or after its end. */
+export function insertAudioFile(clipId: number, path: string, atEnd: boolean): Promise<ClipInfo> {
+  return invoke<ClipInfo>("insert_audio_file", { clipId, path, atEnd });
+}
+
+export function getWorkspace(): Promise<WorkspaceInfo> {
+  return invoke<WorkspaceInfo>("get_workspace");
+}
+
+/** Points the workspace at a folder; pass null to go back to the default. */
+export function setWorkspace(path: string | null): Promise<WorkspaceInfo> {
+  return invoke<WorkspaceInfo>("set_workspace", { path });
+}
+
+export function listTunes(): Promise<TuneInfo[]> {
+  return invoke<TuneInfo[]>("list_tunes");
+}
+
+/** Copies files into the workspace's tunes folder. Returns the whole library. */
+export function addTunes(paths: string[]): Promise<{ tunes: TuneInfo[]; failures: string[] }> {
+  return invoke("add_tunes", { paths });
+}
+
+/** Deletes a tune from the tunes folder. Returns what is left. */
+export function removeTune(name: string): Promise<TuneInfo[]> {
+  return invoke<TuneInfo[]>("remove_tune", { name });
+}
+
+/** Plays a tune, resuming it if it is the one that was paused. */
+export function previewPlay(name: string): Promise<void> {
+  return invoke("preview_play", { name });
+}
+
+export function previewPause(): Promise<void> {
+  return invoke("preview_pause");
+}
+
+export function previewState(): Promise<PreviewState> {
+  return invoke<PreviewState>("preview_state");
+}
+
+/** Saves the session into the workspace. Returns the project's folder. */
+export function saveProject(name: string, tracks: Track[]): Promise<string> {
+  return invoke<string>("save_project", {
+    name,
+    tracks: tracks.map((track) => ({
+      clipId: track.clip.id,
+      gain: track.gain,
+      muted: track.muted,
+      soloed: track.soloed,
+      inMaster: track.inMaster,
+      offsetSecs: track.offset,
+    })),
+  });
+}
+
+export function listProjects(): Promise<ProjectSummary[]> {
+  return invoke<ProjectSummary[]>("list_projects");
+}
+
+/** Loads a project's tracks as new clips, ready to replace the session. */
+export function openProject(name: string): Promise<Track[]> {
+  return invoke<Track[]>("open_project", { name });
+}
+
 /** Gain and limiter on the summed mix. Unity gain with no limiter is the original sound. */
 export function setMaster(master: MasterBus): Promise<void> {
   return invoke("set_master", { master });
@@ -288,6 +357,7 @@ export function previewPattern(pattern: Pattern): Promise<void> {
   return invoke("preview_pattern", { pattern });
 }
 
-export function stopPreview(): Promise<void> {
-  return invoke("stop_preview");
+/** Silences the pattern loop started by `previewPattern`. */
+export function stopPatternPreview(): Promise<void> {
+  return invoke("stop_pattern_preview");
 }

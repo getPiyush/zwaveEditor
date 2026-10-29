@@ -7,13 +7,14 @@ import {
   cropRange,
   deleteRange,
   importAudio,
+  insertAudioFile,
   isSupportedFile,
   pasteRange,
   pickAudioFiles,
   renderPattern,
   setMaster,
   setMix,
-  stopPreview,
+  stopPatternPreview,
   takeStartupFiles,
   transportState,
   undoEdit,
@@ -27,7 +28,6 @@ import {
   saveMode,
   TRANSPARENT_MASTER,
 } from "./lib/beat";
-import { ImportScreen } from "./components/ImportScreen";
 import { PatternDialog } from "./components/PatternDialog";
 import { SessionScreen } from "./components/SessionScreen";
 import type { AppMode, BeatSettings, ClipInfo, Pattern, Selection, Track } from "./types";
@@ -58,7 +58,7 @@ export default function App() {
     saveMode(next);
     if (next === "editor") {
       setPatternEditor(null);
-      void stopPreview().catch(() => {});
+      void stopPatternPreview().catch(() => {});
     }
   }, []);
 
@@ -184,6 +184,21 @@ export default function App() {
     [replaceClip],
   );
 
+  /** Joins a whole file onto a track, before or after what is there. */
+  const insertFile = useCallback(
+    async (clipId: number, path: string, atEnd: boolean) => {
+      try {
+        replaceClip(await insertAudioFile(clipId, path, atEnd));
+        setError(null);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return false;
+      }
+    },
+    [replaceClip],
+  );
+
   const changeTrack = useCallback((clipId: number, changes: Partial<Track>) => {
     setTracks((current) =>
       current.map((track) => (track.clip.id === clipId ? { ...track, ...changes } : track)),
@@ -199,6 +214,15 @@ export default function App() {
     setTracks((current) => {
       current.forEach((track) => void closeClip(track.clip.id));
       return [];
+    });
+    setError(null);
+  }, []);
+
+  /** Swaps the whole session for an opened project's tracks. */
+  const replaceSession = useCallback((opened: Track[]) => {
+    setTracks((current) => {
+      current.forEach((track) => void closeClip(track.clip.id));
+      return opened;
     });
     setError(null);
   }, []);
@@ -223,61 +247,42 @@ export default function App() {
   }, []);
 
   /** Renders the pattern and adds it as a track, or swaps it into the track it came from. */
-  const commitPattern = useCallback(
-    async (pattern: Pattern, replaceClipId: number | null) => {
-      const existing =
-        replaceClipId === null
-          ? undefined
-          : tracksRef.current.find((t) => t.clip.id === replaceClipId);
-      const name = existing
-        ? existing.clip.name.replace(/\d+(\.\d+)? BPM$/, `${pattern.bpm} BPM`)
-        : `Beat ${(patternCount.current += 1)} · ${pattern.bpm} BPM`;
+  const commitPattern = useCallback(async (pattern: Pattern, replaceClipId: number | null) => {
+    const existing =
+      replaceClipId === null
+        ? undefined
+        : tracksRef.current.find((t) => t.clip.id === replaceClipId);
+    const name = existing
+      ? existing.clip.name.replace(/\d+(\.\d+)? BPM$/, `${pattern.bpm} BPM`)
+      : `Beat ${(patternCount.current += 1)} · ${pattern.bpm} BPM`;
 
-      const clip = await renderPattern(pattern, name);
+    const clip = await renderPattern(pattern, name);
 
-      if (existing) {
-        setTracks((current) =>
-          current.map((t) => (t.clip.id === existing.clip.id ? { ...t, clip, pattern } : t)),
-        );
-        void closeClip(existing.clip.id);
-        return;
-      }
+    if (existing) {
+      setTracks((current) =>
+        current.map((t) => (t.clip.id === existing.clip.id ? { ...t, clip, pattern } : t)),
+      );
+      void closeClip(existing.clip.id);
+      return;
+    }
 
-      // New patterns land at the start of the bar the playhead is in.
-      let offset = 0;
-      try {
-        offset = floorToBar((await transportState()).positionSecs, pattern.bpm);
-      } catch {
-        /* No engine; start of the session. */
-      }
-      setTracks((current) => [
-        ...current,
-        { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset, pattern },
-      ]);
-    },
-    [],
-  );
+    // New patterns land at the start of the bar the playhead is in.
+    let offset = 0;
+    try {
+      offset = floorToBar((await transportState()).positionSecs, pattern.bpm);
+    } catch {
+      /* No engine; start of the session. */
+    }
+    setTracks((current) => [
+      ...current,
+      { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset, pattern },
+    ]);
+  }, []);
 
   const editedTrack =
     patternEditor?.clipId != null
       ? tracks.find((t) => t.clip.id === patternEditor.clipId)
       : undefined;
-
-  const patternDialog =
-    mode === "beat" && patternEditor ? (
-      <PatternDialog
-        initial={patternEditor.pattern}
-        bpm={beat.bpm}
-        isUpdate={patternEditor.clipId !== null}
-        note={
-          editedTrack && editedTrack.clip.version > 0
-            ? "This track's audio has been edited since it was made. Updating re-renders it from the grid, replacing those edits."
-            : undefined
-        }
-        onCommit={(pattern) => commitPattern(pattern, patternEditor.clipId)}
-        onClose={() => setPatternEditor(null)}
-      />
-    ) : null;
 
   // The engine mirrors the track list, so publish the whole mix on any change.
   useEffect(() => {
@@ -317,53 +322,53 @@ export default function App() {
         unlisten = fn;
       })
       .catch(() => {
-        /* Not running inside Tauri; the browse button still works. */
+        /* Not running inside Tauri; "Add files…" still works. */
       });
 
     return () => unlisten?.();
   }, [openPaths]);
 
-  if (tracks.length > 0) {
-    return (
-      <>
-      <SessionScreen
-        tracks={tracks}
-        onAddFiles={browse}
-        onTrackChange={changeTrack}
-        onTrackRemove={removeTrack}
-        onCloseAll={closeAll}
-        onEditSelection={editSelection}
-        onCopySelection={copySelection}
-        onPaste={pasteInto}
-        onUndoTrack={undoTrack}
-        onRecordingComplete={addRecording}
-        isImporting={importing !== null}
-        error={error}
-        mode={mode}
-        onModeChange={changeMode}
-        beat={mode === "beat" ? beat : undefined}
-        onBeatChange={changeBeat}
-        onNewPattern={openNewPattern}
-        onEditPattern={openPatternFor}
-      />
-      {patternDialog}
-      </>
-    );
-  }
-
   return (
     <>
-      <ImportScreen
-        onBrowse={browse}
-        isDragging={isDragging}
-        isImporting={importing !== null}
-        importingName={importing}
-        error={error}
-        mode={mode}
-        onModeChange={changeMode}
-        onNewPattern={openNewPattern}
+    <SessionScreen
+      tracks={tracks}
+      onAddFiles={browse}
+      onOpenPaths={openPaths}
+      onInsertFile={insertFile}
+      onProjectOpened={replaceSession}
+      onTrackChange={changeTrack}
+      onTrackRemove={removeTrack}
+      onCloseAll={closeAll}
+      onEditSelection={editSelection}
+      onCopySelection={copySelection}
+      onPaste={pasteInto}
+      onUndoTrack={undoTrack}
+      onRecordingComplete={addRecording}
+      isDragging={isDragging}
+      isImporting={importing !== null}
+      importingName={importing}
+      error={error}
+      mode={mode}
+      onModeChange={changeMode}
+      beat={mode === "beat" ? beat : undefined}
+      onBeatChange={changeBeat}
+      onNewPattern={openNewPattern}
+      onEditPattern={openPatternFor}
+    />
+    {mode === "beat" && patternEditor && (
+      <PatternDialog
+        initial={patternEditor.pattern}
+        bpm={beat.bpm}
+        isUpdate={patternEditor.clipId !== null}
+        note={
+          editedTrack && editedTrack.clip.version > 0
+            ? "This track's audio has been edited since it was made. Updating re-renders it from the grid, replacing those edits."
+            : undefined
+        }
+        onCommit={(pattern) => commitPattern(pattern, patternEditor.clipId)}
+        onClose={() => setPatternEditor(null)}
       />
-      {patternDialog}
+    )}
     </>
   );
 }
