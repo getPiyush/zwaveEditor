@@ -208,11 +208,13 @@ pub fn copy_range(
 }
 
 /// Replaces the span with the clipboard; an empty span inserts at that point.
+/// `silence_secs` of blank filler go in ahead of the pasted audio.
 #[tauri::command]
 pub fn paste_range(
     clip_id: u64,
     start_secs: f64,
     end_secs: f64,
+    silence_secs: f64,
     store: State<ClipStore>,
     clipboard: State<Clipboard>,
 ) -> Result<ClipInfo, String> {
@@ -226,10 +228,63 @@ pub fn paste_range(
         clip_id,
         |audio| {
             let (start, end) = edit::frame_range(audio, start_secs, end_secs);
-            edit::paste_range(audio, start, end, &copied)
+            let silence = (silence_secs.max(0.0) * audio.sample_rate as f64).round() as usize;
+            edit::paste_after_silence(audio, start, end, silence, &copied)
         },
         |entry| clip_info(clip_id, entry),
     )
+}
+
+/// Rate and channel count for a blank track when nothing else suggests one.
+const BLANK_SAMPLE_RATE: u32 = 48_000;
+const BLANK_CHANNELS: usize = 2;
+
+/// Opens a new clip of `seconds` of silence. It takes the clipboard's format
+/// when there is one, so pasting into it needs no conversion.
+#[tauri::command]
+pub fn new_blank_clip(
+    seconds: f64,
+    name: String,
+    store: State<ClipStore>,
+    clipboard: State<Clipboard>,
+) -> Result<ClipInfo, String> {
+    if !(seconds > 0.0) {
+        return Err("a blank track needs a length".to_string());
+    }
+    let (sample_rate, channels) = clipboard
+        .0
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or((BLANK_SAMPLE_RATE, BLANK_CHANNELS), |copied| {
+            (copied.sample_rate, copied.channel_count())
+        });
+    let frames = (seconds * sample_rate as f64).round() as usize;
+    let audio = edit::silence(frames.max(1), sample_rate, channels);
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Blank".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("blank://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
+}
+
+/// Opens what is on the clipboard as a new clip of its own.
+#[tauri::command]
+pub fn new_clip_from_clipboard(
+    name: String,
+    store: State<ClipStore>,
+    clipboard: State<Clipboard>,
+) -> Result<ClipInfo, String> {
+    let copied = clipboard
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "nothing has been copied yet".to_string())?;
+    let audio = edit::copy_range(&copied, 0, copied.frame_count())?;
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Copied".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("clipboard://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
 }
 
 #[tauri::command]
@@ -327,11 +382,15 @@ pub fn set_mix(
     Ok(())
 }
 
+/// Plays from the playhead; with `until`, stops there, as when playing a selection.
 #[tauri::command]
-pub fn transport_play(engine: State<AudioEngine>) {
+pub fn transport_play(until: Option<f64>, engine: State<AudioEngine>) {
     // The session and a tune preview would only talk over each other.
     engine.mixer.pause_preview();
-    engine.mixer.play();
+    match until {
+        Some(until) => engine.mixer.play_until(until),
+        None => engine.mixer.play(),
+    }
 }
 
 #[tauri::command]

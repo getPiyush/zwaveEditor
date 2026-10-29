@@ -731,6 +731,36 @@ button:disabled {
   font-size: 12px;
 }
 
+.editbar__filler {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 6px;
+  color: var(--text-dim);
+}
+
+.editbar__filler label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editbar__filler input[type="number"] {
+  width: 56px;
+  height: 24px;
+  padding: 0 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.editbar__filler input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ---------- Export dialog ---------- */
 
 .modal-backdrop {
@@ -1689,4 +1719,93 @@ button:disabled {
   .modal__backdrop {
     padding: 8px;
   }
+}
+
+/* ---------- Add track dialog ---------- */
+
+.add-track {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 380px;
+}
+
+.add-track__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  background: #0d131d;
+  border-radius: 6px;
+}
+
+.add-track__option h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.add-track__option p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.add-track__option .btn {
+  flex-shrink: 0;
+}
+
+.add-track__length {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.add-track__tune-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.add-track__time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.add-track__tune {
+  max-width: 220px;
+  height: 26px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.add-track__tune:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.add-track__length input {
+  width: 64px;
+  height: 24px;
+  padding: 0 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.add-track__length input:focus {
+  outline: none;
+  border-color: var(--accent);
 }

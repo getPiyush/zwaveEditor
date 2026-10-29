@@ -65,6 +65,16 @@ pub fn crop_range(audio: &DecodedAudio, start: usize, end: usize) -> Result<Deco
     })
 }
 
+/// `frames` of silence, for a blank track to paste into.
+pub fn silence(frames: usize, sample_rate: u32, channel_count: usize) -> DecodedAudio {
+    DecodedAudio {
+        channels: vec![vec![0.0; frames]; channel_count.max(1)],
+        sample_rate,
+        codec: "silence".to_string(),
+        bits_per_sample: None,
+    }
+}
+
 /// Copies `[start, end)` out as a clip of its own, for the clipboard.
 pub fn copy_range(audio: &DecodedAudio, start: usize, end: usize) -> Result<DecodedAudio, String> {
     crop_range(audio, start, end)
@@ -76,6 +86,18 @@ pub fn paste_range(
     audio: &DecodedAudio,
     start: usize,
     end: usize,
+    insert: &DecodedAudio,
+) -> Result<DecodedAudio, String> {
+    paste_after_silence(audio, start, end, 0, insert)
+}
+
+/// `paste_range` with `silence` frames of blank filler laid down just before
+/// the pasted audio, so it can land some way past where the clip ends.
+pub fn paste_after_silence(
+    audio: &DecodedAudio,
+    start: usize,
+    end: usize,
+    silence: usize,
     insert: &DecodedAudio,
 ) -> Result<DecodedAudio, String> {
     if insert.frame_count() == 0 {
@@ -91,8 +113,10 @@ pub fn paste_range(
         .iter()
         .zip(pasted)
         .map(|(samples, middle)| {
-            let mut joined = Vec::with_capacity(samples.len() - (end - start) + middle.len());
+            let mut joined =
+                Vec::with_capacity(samples.len() - (end - start) + silence + middle.len());
             joined.extend_from_slice(&samples[..start.min(samples.len())]);
+            joined.resize(joined.len() + silence, 0.0);
             joined.extend_from_slice(&middle);
             joined.extend_from_slice(&samples[end.min(samples.len())..]);
             joined
@@ -538,6 +562,21 @@ mod tests {
 
         let replaced = paste_range(&ramp(5), 1, 4, &clip).unwrap();
         assert_eq!(replaced.channels[0], vec![0.0, 7.0, 8.0, 4.0]);
+    }
+
+    #[test]
+    fn silence_is_all_zeros_on_every_channel() {
+        let blank = silence(4, 1000, 2);
+        assert_eq!(blank.channels, vec![vec![0.0; 4], vec![0.0; 4]]);
+        assert_eq!(blank.sample_rate, 1000);
+    }
+
+    #[test]
+    fn paste_after_silence_puts_blank_filler_before_the_paste() {
+        let clip = copy_range(&ramp(10), 7, 9).unwrap();
+        let pasted = paste_after_silence(&ramp(3), 3, 3, 2, &clip).unwrap();
+        assert_eq!(pasted.channels[0], vec![0.0, 1.0, 2.0, 0.0, 0.0, 7.0, 8.0]);
+        assert_eq!(pasted.channels[1], pasted.channels[0]);
     }
 
     #[test]

@@ -16,6 +16,7 @@ import type {
   AppMode,
   BeatSettings,
   ClipInfo,
+  NewTrackSource,
   Selection,
   Track,
   TuneDrop,
@@ -23,6 +24,7 @@ import type {
   ViewRange,
   WorkspaceInfo,
 } from "../types";
+import { AddTrackDialog } from "./AddTrackDialog";
 import { BeatBar } from "./BeatBar";
 import { ExportDialog } from "./ExportDialog";
 import { ModeSwitch } from "./ModeSwitch";
@@ -48,9 +50,11 @@ interface Props {
   onCloseAll: () => void;
   onEditSelection: (kind: "delete" | "crop", selection: Selection) => Promise<boolean>;
   onCopySelection: (selection: Selection) => Promise<number | null>;
-  onPaste: (target: Selection) => Promise<boolean>;
+  onPaste: (target: Selection, silence: number) => Promise<boolean>;
   onUndoTrack: (clipId: number) => Promise<boolean>;
   onRecordingComplete: (clip: ClipInfo) => void;
+  /** Adds a track starting at `offset`. Returns its clip id, or null if it failed. */
+  onNewTrack: (source: NewTrackSource, offset: number) => Promise<number | null>;
   isDragging: boolean;
   isImporting: boolean;
   importingName: string | null;
@@ -64,9 +68,13 @@ interface Props {
   onEditPattern: (clipId: number) => void;
 }
 
-/** Where on a track, in clip time, a paste at the playhead lands. */
-function pastePoint(track: Track, playhead: number): number {
-  return Math.min(Math.max(playhead - track.offset, 0), track.clip.durationSecs);
+/**
+ * Where on a track, in clip time, a paste at the playhead lands. With blank
+ * filler on it may lie past the clip's end; the gap is then filled with silence.
+ */
+function pastePoint(track: Track, playhead: number, filler: boolean): number {
+  const at = Math.max(playhead - track.offset, 0);
+  return filler ? at : Math.min(at, track.clip.durationSecs);
 }
 
 export function SessionScreen({
@@ -83,6 +91,7 @@ export function SessionScreen({
   onPaste,
   onUndoTrack,
   onRecordingComplete,
+  onNewTrack,
   isDragging,
   isImporting,
   importingName,
@@ -104,9 +113,15 @@ export function SessionScreen({
   const [activeClipId, setActiveClipId] = useState<number | null>(null);
   // Length of what is on the clipboard, in seconds, or null if nothing is.
   const [clipboard, setClipboard] = useState<number | null>(null);
+  // Blank filler: lets a paste land past a track's end, padding the gap with
+  // silence, plus an optional extra gap of silence ahead of every paste.
+  const [filler, setFiller] = useState(false);
+  const [fillerGapDraft, setFillerGapDraft] = useState("0");
+  const fillerGap = filler ? Math.max(Number(fillerGapDraft) || 0, 0) : 0;
   const [showExport, setShowExport] = useState(false);
   const [showRecording, setShowRecording] = useState(false);
   const [showRepeat, setShowRepeat] = useState(false);
+  const [showAddTrack, setShowAddTrack] = useState(false);
   const [showAdjustWave, setShowAdjustWave] = useState(false);
   const [showConfirmCloseAll, setShowConfirmCloseAll] = useState(false);
   const [showTunes, setShowTunes] = useState(false);
@@ -239,9 +254,13 @@ export function SessionScreen({
       void transportPause();
       return;
     }
-    // Playing with a range selected starts from the top of that range.
-    if (selection && selectedTrack) seek(selectedTrack.offset + selection.start);
     setFollowPlayhead(true);
+    // Playing with a range selected plays just that range, from its top.
+    if (selection && selectedTrack && selection.end > selection.start) {
+      seek(selectedTrack.offset + selection.start);
+      void transportPlay(selectedTrack.offset + selection.end);
+      return;
+    }
     void transportPlay();
   }, [state.playing, selection, selectedTrack, seek]);
 
@@ -282,27 +301,30 @@ export function SessionScreen({
     if (clipboard === null) return;
     let target: Selection;
     let offset: number;
+    let silence = fillerGap;
     if (selection && selectedTrack) {
       target = selection;
       offset = selectedTrack.offset;
     } else if (activeTrack) {
-      const at = pastePoint(activeTrack, positionRef.current);
+      const aimed = pastePoint(activeTrack, positionRef.current, filler);
+      const at = Math.min(aimed, activeTrack.clip.durationSecs);
       target = { clipId: activeTrack.clip.id, start: at, end: at };
       offset = activeTrack.offset;
+      silence += aimed - at;
     } else {
       return;
     }
 
-    if (await onPaste(target)) {
+    if (await onPaste(target, silence)) {
       setLastEdited(target.clipId);
       setActiveClipId(target.clipId);
       setSelection(null);
       // Not `seek`: the session may have just grown past the duration it clamps to.
-      const after = offset + target.start + clipboard;
+      const after = offset + target.start + silence + clipboard;
       anticipate(after);
       void transportSeek(after);
     }
-  }, [clipboard, selection, selectedTrack, activeTrack, onPaste, anticipate]);
+  }, [clipboard, selection, selectedTrack, activeTrack, onPaste, anticipate, filler, fillerGap]);
 
   const undo = useCallback(
     async (clipId: number) => {
@@ -317,6 +339,18 @@ export function SessionScreen({
       setSelection(null);
     },
     [onRecordingComplete],
+  );
+
+  // A new track becomes the active one, so a paste at the playhead lands on it.
+  const addTrack = useCallback(
+    async (source: NewTrackSource) => {
+      const offset = source.kind === "clipboard" ? positionRef.current : 0;
+      const clipId = await onNewTrack(source, offset);
+      if (clipId === null) return;
+      setActiveClipId(clipId);
+      setSelection(null);
+    },
+    [onNewTrack],
   );
 
   const handleRepeat = useCallback(
@@ -423,6 +457,39 @@ export function SessionScreen({
 
   const inMasterCount = tracks.filter((track) => track.inMaster).length;
 
+  // Silence a paste at the playhead would lay down ahead of the clipboard.
+  const pasteSilence = activeTrack
+    ? fillerGap +
+      Math.max(pastePoint(activeTrack, position, filler) - activeTrack.clip.durationSecs, 0)
+    : 0;
+
+  const fillerControls = (
+    <span className="editbar__filler">
+      <label title="Paste past a track's end, filling the gap with silence">
+        <input
+          type="checkbox"
+          checked={filler}
+          onChange={(event) => setFiller(event.target.checked)}
+        />
+        Blank filler
+      </label>
+      {filler && (
+        <label title="Extra silence to put just before the pasted audio">
+          +
+          <input
+            type="number"
+            min={0}
+            step={0.1}
+            value={fillerGapDraft}
+            onChange={(event) => setFillerGapDraft(event.target.value)}
+            aria-label="Silence before paste, in seconds"
+          />
+          s
+        </label>
+      )}
+    </span>
+  );
+
   return (
     <div className="session">
       <header className="session__header">
@@ -449,8 +516,8 @@ export function SessionScreen({
           >
             <TunesIcon />
           </button>
-          <button type="button" onClick={onAddFiles} disabled={isImporting}>
-            {isImporting ? "Importing…" : "Add files…"}
+          <button type="button" onClick={() => setShowAddTrack(true)} disabled={isImporting}>
+            {isImporting ? "Importing…" : "Add track…"}
           </button>
           <button type="button" onClick={() => setProjectDialog("open")}>
             Open project…
@@ -514,6 +581,7 @@ export function SessionScreen({
             <button type="button" onClick={() => void copy(true)}>
               Cut
             </button>
+            {clipboard !== null && fillerControls}
             <button type="button" onClick={() => void paste()} disabled={clipboard === null}>
               Paste
             </button>
@@ -540,9 +608,13 @@ export function SessionScreen({
         <div className="editbar">
           <span className="editbar__range">
             <strong>{activeTrack.clip.name}</strong> clipboard {formatTime(clipboard)} → at{" "}
-            {formatTime(pastePoint(activeTrack, position))}
+            {formatTime(pastePoint(activeTrack, position, filler))}
+            {pasteSilence > 0 && (
+              <span className="editbar__length">(after {formatTime(pasteSilence)} of silence)</span>
+            )}
           </span>
           <div className="editbar__actions">
+            {fillerControls}
             <button type="button" onClick={() => void paste()}>
               Paste at playhead
             </button>
@@ -655,6 +727,20 @@ export function SessionScreen({
         <RecordingDialog
           onClose={() => setShowRecording(false)}
           onRecordingComplete={handleRecordingComplete}
+        />
+      )}
+
+      {showAddTrack && (
+        <AddTrackDialog
+          clipboard={clipboard}
+          playhead={position}
+          defaultSeconds={duration > 0 ? duration : 10}
+          isImporting={isImporting}
+          onBlank={(seconds) => addTrack({ kind: "blank", seconds })}
+          onClipboard={() => addTrack({ kind: "clipboard" })}
+          onFile={onAddFiles}
+          onTune={(tune) => onOpenPaths([tune.path])}
+          onClose={() => setShowAddTrack(false)}
         />
       )}
 

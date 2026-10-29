@@ -38,6 +38,9 @@ export interface Track {
 }
 
 /** A range selected on one track, in seconds from the start of the clip. */
+/** What a track made from scratch starts out holding. */
+export type NewTrackSource = { kind: "blank"; seconds: number } | { kind: "clipboard" };
+
 export interface Selection {
   clipId: number;
   start: number;

@@ -9,6 +9,8 @@ import {
   importAudio,
   insertAudioFile,
   isSupportedFile,
+  newBlankClip,
+  newClipFromClipboard,
   pasteRange,
   pickAudioFiles,
   renderPattern,
@@ -30,7 +32,15 @@ import {
 } from "./lib/beat";
 import { PatternDialog } from "./components/PatternDialog";
 import { SessionScreen } from "./components/SessionScreen";
-import type { AppMode, BeatSettings, ClipInfo, Pattern, Selection, Track } from "./types";
+import type {
+  AppMode,
+  BeatSettings,
+  ClipInfo,
+  NewTrackSource,
+  Pattern,
+  Selection,
+  Track,
+} from "./types";
 
 /** The pattern dialog: a fresh pattern, or the one behind an existing track. */
 interface PatternEditor {
@@ -52,6 +62,8 @@ export default function App() {
   const [beat, setBeat] = useState<BeatSettings>(loadBeat);
   const [patternEditor, setPatternEditor] = useState<PatternEditor | null>(null);
   const patternCount = useRef(0);
+  const blankCount = useRef(0);
+  const copiedCount = useRef(0);
 
   const changeMode = useCallback((next: AppMode) => {
     setModeState(next);
@@ -157,9 +169,9 @@ export default function App() {
 
   /** Pastes over a range of a track, or inserts when the range is empty. */
   const pasteInto = useCallback(
-    async (target: Selection) => {
+    async (target: Selection, silence: number) => {
       try {
-        replaceClip(await pasteRange(target.clipId, target.start, target.end));
+        replaceClip(await pasteRange(target.clipId, target.start, target.end, silence));
         setError(null);
         return true;
       } catch (err) {
@@ -232,6 +244,25 @@ export default function App() {
       ...current,
       { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset: 0 },
     ]);
+  }, []);
+
+  /** Adds a blank track, or one holding the clipboard. Returns its id, or null. */
+  const addNewTrack = useCallback(async (source: NewTrackSource, offset: number) => {
+    try {
+      const clip =
+        source.kind === "blank"
+          ? await newBlankClip(source.seconds, `Blank ${(blankCount.current += 1)}`)
+          : await newClipFromClipboard(`Copied ${(copiedCount.current += 1)}`);
+      setTracks((current) => [
+        ...current,
+        { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset },
+      ]);
+      setError(null);
+      return clip.id;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return null;
+    }
   }, []);
 
   const openNewPattern = useCallback(() => {
@@ -344,6 +375,7 @@ export default function App() {
       onPaste={pasteInto}
       onUndoTrack={undoTrack}
       onRecordingComplete={addRecording}
+      onNewTrack={addNewTrack}
       isDragging={isDragging}
       isImporting={importing !== null}
       importingName={importing}

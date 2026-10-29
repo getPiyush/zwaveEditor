@@ -46,6 +46,9 @@ pub struct Mixer {
     position_bits: AtomicU64,
     /// Latest track end in seconds, as `f64::to_bits`.
     duration_bits: AtomicU64,
+    /// Where playback stops short of the end, in seconds, as `f64::to_bits`;
+    /// zero bits (0.0) means it runs to the end. Set to play just a selection.
+    stop_bits: AtomicU64,
     /// Gain and limiter on the summed output. Unity and off by default.
     master: ArcSwap<MasterBus>,
     /// A beat pattern looping on its own while it is edited (beat mode). It
@@ -79,6 +82,16 @@ impl Mixer {
         if self.position() >= self.duration() - 1e-6 {
             self.seek(0.0);
         }
+        self.stop_bits.store(0, Ordering::Relaxed);
+        self.playing.store(true, Ordering::Relaxed);
+    }
+
+    /// Plays from the playhead and stops at `until`, as when playing a selection.
+    pub fn play_until(&self, until: f64) {
+        if !until.is_finite() || until <= self.position() {
+            return self.play();
+        }
+        self.stop_bits.store(until.to_bits(), Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
@@ -106,6 +119,7 @@ impl Mixer {
 
     pub fn pause(&self) {
         self.playing.store(false, Ordering::Relaxed);
+        self.stop_bits.store(0, Ordering::Relaxed);
     }
 
     /// Moves the playhead. It may land past the current end: an edit can seek
@@ -114,6 +128,8 @@ impl Mixer {
     pub fn seek(&self, seconds: f64) {
         let clamped = if seconds.is_finite() { seconds.max(0.0) } else { 0.0 };
         self.position_bits.store(clamped.to_bits(), Ordering::Relaxed);
+        // Jumping elsewhere lets playback run on rather than stop at a selection's end.
+        self.stop_bits.store(0, Ordering::Relaxed);
     }
 
     pub fn is_playing(&self) -> bool {
@@ -256,8 +272,8 @@ impl Mixer {
         let tracks = self.tracks.load();
         let master = **self.master.load();
         let pattern_loop = self.pattern_loop.load_full();
-        let playing = self.playing.load(Ordering::Relaxed);
-        let target = if playing { 1.0f32 } else { 0.0f32 };
+        let mut playing = self.playing.load(Ordering::Relaxed);
+        let mut target = if playing { 1.0f32 } else { 0.0f32 };
         let ramp_step = 1.0 / (RAMP_SECONDS * rate as f32).max(1.0);
 
         // Fully stopped, fully faded and nothing auditioning: nothing to mix.
@@ -273,10 +289,23 @@ impl Mixer {
             .unwrap_or(0.0);
 
         let duration = self.duration();
+        let stop = match f64::from_bits(self.stop_bits.load(Ordering::Relaxed)) {
+            until if until > 0.0 => until.min(duration),
+            _ => duration,
+        };
         let mut position = self.position();
         let delta = 1.0 / rate;
 
         for frame in data.chunks_mut(out_channels.max(1)) {
+            // Stopping mid-buffer fades out from the very frame playback ends on.
+            if playing && position >= stop {
+                position = stop;
+                playing = false;
+                target = 0.0;
+                self.playing.store(false, Ordering::Relaxed);
+                self.stop_bits.store(0, Ordering::Relaxed);
+            }
+
             *ramp = if *ramp < target {
                 (*ramp + ramp_step).min(target)
             } else {
@@ -349,9 +378,10 @@ impl Mixer {
                 .store(loop_pos.to_bits(), Ordering::Relaxed);
         }
 
-        if playing && position >= duration {
-            position = duration;
+        if playing && position >= stop {
+            position = stop;
             self.playing.store(false, Ordering::Relaxed);
+            self.stop_bits.store(0, Ordering::Relaxed);
         }
         self.position_bits.store(position.to_bits(), Ordering::Relaxed);
     }
@@ -581,6 +611,27 @@ mod tests {
 
         assert!(!mixer.is_playing());
         assert!((mixer.position() - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn playing_a_selection_stops_at_its_end() {
+        let mixer = Mixer::default();
+        mixer.set_tracks(vec![constant_track(0.5, 4800, 48_000, 1.0)]); // 100 ms
+
+        mixer.seek(0.02);
+        mixer.play_until(0.05);
+        let mut ramp = 1.0;
+        let mut data = vec![0.0f32; 4800 * 2];
+        mixer.fill(&mut data, 2, 48_000.0, &mut ramp);
+
+        assert!(!mixer.is_playing());
+        assert!((mixer.position() - 0.05).abs() < 1e-6);
+        assert_eq!(data[2000 * 2], 0.0, "silent once the selection has ended");
+
+        // The next plain play runs on to the end of the session.
+        mixer.play();
+        mixer.fill(&mut data, 2, 48_000.0, &mut ramp);
+        assert!((mixer.position() - 0.1).abs() < 1e-6);
     }
 
     #[test]

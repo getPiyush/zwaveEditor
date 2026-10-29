@@ -113,9 +113,32 @@ export function copyRange(clipId: number, start: number, end: number): Promise<n
   return invoke<number>("copy_range", { clipId, startSecs: start, endSecs: end });
 }
 
-/** Replaces a range with the clipboard; pass `start === end` to insert. */
-export function pasteRange(clipId: number, start: number, end: number): Promise<ClipInfo> {
-  return invoke<ClipInfo>("paste_range", { clipId, startSecs: start, endSecs: end });
+/**
+ * Replaces a range with the clipboard; pass `start === end` to insert.
+ * `silence` seconds of blank filler go in just before the pasted audio.
+ */
+export function pasteRange(
+  clipId: number,
+  start: number,
+  end: number,
+  silence = 0,
+): Promise<ClipInfo> {
+  return invoke<ClipInfo>("paste_range", {
+    clipId,
+    startSecs: start,
+    endSecs: end,
+    silenceSecs: silence,
+  });
+}
+
+/** Opens a new clip of `seconds` of silence, for a blank track. */
+export function newBlankClip(seconds: number, name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("new_blank_clip", { seconds, name });
+}
+
+/** Opens what is on the clipboard as a new clip of its own. */
+export function newClipFromClipboard(name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("new_clip_from_clipboard", { name });
 }
 
 export function undoEdit(clipId: number): Promise<ClipInfo> {
@@ -161,8 +184,9 @@ export function exportMaster(
   });
 }
 
-export function transportPlay(): Promise<void> {
-  return invoke("transport_play");
+/** Plays from the playhead; with `until`, stops there, as when playing a selection. */
+export function transportPlay(until?: number): Promise<void> {
+  return invoke("transport_play", { until: until ?? null });
 }
 
 export function transportPause(): Promise<void> {

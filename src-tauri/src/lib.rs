@@ -45,6 +45,8 @@ pub fn run() {
             commands::crop_range,
             commands::copy_range,
             commands::paste_range,
+            commands::new_blank_clip,
+            commands::new_clip_from_clipboard,
             commands::undo_edit,
             commands::export_tracks,
             commands::export_master,
