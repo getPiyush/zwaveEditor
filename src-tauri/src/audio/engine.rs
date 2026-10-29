@@ -4,10 +4,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use super::decode::DecodedAudio;
+use super::master::{Limiter, MasterBus};
 
 /// Length of the fade applied when starting and stopping, in seconds.
 /// Without it, cutting the signal mid-cycle is audible as a click.
@@ -38,6 +39,13 @@ pub struct Mixer {
     position_bits: AtomicU64,
     /// Latest track end in seconds, as `f64::to_bits`.
     duration_bits: AtomicU64,
+    /// Gain and limiter on the summed output. Unity and off by default.
+    master: ArcSwap<MasterBus>,
+    /// A loop auditioned on its own, independent of the transport — used to
+    /// hear a beat pattern while it is being edited.
+    preview: ArcSwapOption<DecodedAudio>,
+    /// Read position inside the preview loop, in source frames, as `f64::to_bits`.
+    preview_pos_bits: AtomicU64,
 }
 
 impl Mixer {
@@ -61,6 +69,28 @@ impl Mixer {
             self.seek(0.0);
         }
         self.playing.store(true, Ordering::Relaxed);
+    }
+
+    pub fn set_master(&self, master: MasterBus) {
+        self.master.store(Arc::new(master.sanitized()));
+    }
+
+    pub fn master(&self) -> MasterBus {
+        **self.master.load()
+    }
+
+    /// Starts looping `audio` on its own, or swaps the loop for a new one.
+    /// Swapping keeps the read position, so editing a pattern while it plays
+    /// does not restart it.
+    pub fn set_preview(&self, audio: Option<Arc<DecodedAudio>>) {
+        if audio.is_none() {
+            self.preview_pos_bits.store(0f64.to_bits(), Ordering::Relaxed);
+        }
+        self.preview.store(audio);
+    }
+
+    pub fn is_previewing(&self) -> bool {
+        self.preview.load().is_some()
     }
 
     pub fn pause(&self) {
@@ -92,16 +122,37 @@ impl Mixer {
     /// `ramp` carries the fade level between calls, so a fade started in one
     /// buffer finishes in the next.
     pub fn fill(&self, data: &mut [f32], out_channels: usize, rate: f64, ramp: &mut f32) {
+        let mut limiter = Limiter::new(rate);
+        self.fill_with(data, out_channels, rate, ramp, &mut limiter);
+    }
+
+    /// `fill`, with the limiter's state carried between calls by the caller.
+    pub fn fill_with(
+        &self,
+        data: &mut [f32],
+        out_channels: usize,
+        rate: f64,
+        ramp: &mut f32,
+        limiter: &mut Limiter,
+    ) {
         let tracks = self.tracks.load();
+        let master = **self.master.load();
+        let preview = self.preview.load_full();
         let playing = self.playing.load(Ordering::Relaxed);
         let target = if playing { 1.0f32 } else { 0.0f32 };
         let ramp_step = 1.0 / (RAMP_SECONDS * rate as f32).max(1.0);
 
-        // Fully stopped and fully faded: nothing to mix.
-        if !playing && *ramp <= 0.0 {
+        // Fully stopped, fully faded and nothing auditioning: nothing to mix.
+        if !playing && *ramp <= 0.0 && preview.is_none() {
             data.fill(0.0);
             return;
         }
+
+        let mut preview_pos = f64::from_bits(self.preview_pos_bits.load(Ordering::Relaxed));
+        let preview_step = preview
+            .as_ref()
+            .map(|audio| audio.sample_rate as f64 / rate)
+            .unwrap_or(0.0);
 
         let duration = self.duration();
         let mut position = self.position();
@@ -138,6 +189,26 @@ impl Mixer {
             left *= *ramp;
             right *= *ramp;
 
+            if let Some(audio) = preview.as_ref() {
+                let frames = audio.frame_count() as f64;
+                if frames > 0.0 {
+                    if preview_pos >= frames {
+                        preview_pos %= frames;
+                    }
+                    let l = sample_at(&audio.channels[0], preview_pos);
+                    let r = if audio.channels.len() > 1 {
+                        sample_at(&audio.channels[1], preview_pos)
+                    } else {
+                        l
+                    };
+                    left += l;
+                    right += r;
+                    preview_pos += preview_step;
+                }
+            }
+
+            let (left, right) = master.apply(left, right, limiter);
+
             match out_channels {
                 0 => {}
                 1 => frame[0] = clip((left + right) * 0.5),
@@ -153,6 +224,11 @@ impl Mixer {
             if playing {
                 position += delta;
             }
+        }
+
+        if preview.is_some() {
+            self.preview_pos_bits
+                .store(preview_pos.to_bits(), Ordering::Relaxed);
         }
 
         if playing && position >= duration {
@@ -259,12 +335,13 @@ fn start_stream(mixer: Arc<Mixer>) -> Result<(cpal::Stream, u32), String> {
 
     let on_error = |err| eprintln!("audio output error: {err}");
     let mut ramp = 0.0f32;
+    let mut limiter = Limiter::new(sample_rate as f64);
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_output_stream(
             &stream_config,
             move |data: &mut [f32], _| {
-                mixer.fill(data, channels, sample_rate as f64, &mut ramp);
+                mixer.fill_with(data, channels, sample_rate as f64, &mut ramp, &mut limiter);
             },
             on_error,
             None,
@@ -275,7 +352,13 @@ fn start_stream(mixer: Arc<Mixer>) -> Result<(cpal::Stream, u32), String> {
                 &stream_config,
                 move |data: &mut [i16], _| {
                     scratch.resize(data.len(), 0.0);
-                    mixer.fill(&mut scratch, channels, sample_rate as f64, &mut ramp);
+                    mixer.fill_with(
+                        &mut scratch,
+                        channels,
+                        sample_rate as f64,
+                        &mut ramp,
+                        &mut limiter,
+                    );
                     for (out, value) in data.iter_mut().zip(scratch.iter()) {
                         *out = (value * i16::MAX as f32) as i16;
                     }
@@ -394,6 +477,50 @@ mod tests {
 
         assert_eq!(data[100 * 2], 0.0, "before the offset");
         assert!((data[700 * 2] - 0.5).abs() < 1e-4, "after the offset: {}", data[700 * 2]);
+    }
+
+    #[test]
+    fn master_gain_and_limiter_shape_the_output() {
+        let mixer = Mixer::default();
+        mixer.set_tracks(vec![constant_track(0.8, 48_000, 48_000, 1.0)]);
+        mixer.play();
+
+        mixer.set_master(MasterBus { gain: 0.5, limiter: false });
+        let mut ramp = 1.0;
+        let mut data = vec![0.0f32; 64];
+        mixer.fill(&mut data, 2, 48_000.0, &mut ramp);
+        assert!((data[0] - 0.4).abs() < 1e-6, "half gain: {}", data[0]);
+
+        mixer.set_master(MasterBus { gain: 2.0, limiter: true });
+        mixer.fill(&mut data, 2, 48_000.0, &mut ramp);
+        assert!(data.iter().all(|s| s.abs() <= super::super::master::LIMIT_THRESHOLD + 1e-6));
+    }
+
+    #[test]
+    fn preview_loops_while_the_transport_is_stopped() {
+        let mixer = Mixer::default();
+        // 4 frames: 0.1, 0.2, 0.3, 0.4 — then back to the start.
+        let samples = vec![0.1f32, 0.2, 0.3, 0.4];
+        mixer.set_preview(Some(Arc::new(DecodedAudio {
+            channels: vec![samples.clone(), samples],
+            sample_rate: 48_000,
+            codec: "test".into(),
+            bits_per_sample: None,
+        })));
+
+        let mut ramp = 0.0;
+        let mut data = vec![0.0f32; 6 * 2];
+        mixer.fill(&mut data, 2, 48_000.0, &mut ramp);
+        let left: Vec<f32> = data.iter().step_by(2).copied().collect();
+        let expected = [0.1, 0.2, 0.3, 0.4, 0.1, 0.2];
+        for (got, want) in left.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-6, "{left:?}");
+        }
+        assert!(!mixer.is_playing(), "previewing must not start the transport");
+
+        mixer.set_preview(None);
+        mixer.fill(&mut data, 2, 48_000.0, &mut ramp);
+        assert!(data.iter().all(|s| *s == 0.0));
     }
 
     #[test]

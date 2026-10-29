@@ -8,6 +8,8 @@ use tauri::State;
 
 use crate::audio::engine::{AudioEngine, Track};
 use crate::audio::export::BitDepth;
+use crate::audio::master::MasterBus;
+use crate::audio::pattern::{self, Pattern};
 use crate::audio::recording::Recorder;
 use crate::audio::{decode, edit, export, peaks, ClipEntry, ClipStore, Clipboard};
 
@@ -272,6 +274,7 @@ pub fn export_master(
     tracks: Vec<TrackSetting>,
     path: String,
     bit_depth: BitDepth,
+    master: Option<MasterBus>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
     let mut sources = Vec::new();
@@ -293,7 +296,7 @@ pub fn export_master(
         return Err("no tracks are selected for the master".to_string());
     }
 
-    let rendered = export::render_master(&sources, sample_rate);
+    let rendered = export::render_master_with(&sources, sample_rate, master.unwrap_or_default());
     let path_buf = PathBuf::from(&path);
     export::write_wav(&path_buf, &rendered, sample_rate, bit_depth)?;
     Ok(path)
@@ -546,6 +549,40 @@ pub fn adjust_time(
         },
         |entry| clip_info(clip_id, entry),
     )
+}
+
+/// Sets the master bus: gain on the summed mix, and whether to limit it.
+#[tauri::command]
+pub fn set_master(master: MasterBus, engine: State<AudioEngine>) {
+    engine.mixer.set_master(master);
+}
+
+/// Renders a step pattern into a new clip, ready to be added as a track.
+#[tauri::command]
+pub fn render_pattern(
+    pattern: Pattern,
+    name: String,
+    store: State<ClipStore>,
+) -> Result<ClipInfo, String> {
+    let audio = pattern::render(&pattern)?;
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Pattern".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("pattern://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
+}
+
+/// Loops a pattern on its own, outside the timeline, so it can be heard while
+/// it is edited. Calling it again swaps the loop without restarting it.
+#[tauri::command]
+pub fn preview_pattern(pattern: Pattern, engine: State<AudioEngine>) -> Result<(), String> {
+    let audio = pattern::render(&pattern)?;
+    engine.mixer.set_preview(Some(std::sync::Arc::new(audio)));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_preview(engine: State<AudioEngine>) {
+    engine.mixer.set_preview(None);
 }
 
 /// A track cannot start before the session does.

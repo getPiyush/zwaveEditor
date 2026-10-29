@@ -46,6 +46,10 @@ pub fn run() {
             commands::fade_out,
             commands::adjust_pitch,
             commands::adjust_time,
+            commands::set_master,
+            commands::render_pattern,
+            commands::preview_pattern,
+            commands::stop_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running zwaveEditor");

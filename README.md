@@ -59,6 +59,19 @@ npm run tauri dev -- -- track-one.wav track-two.mp3
   `esc` clear it, `⌘/Ctrl + C` / `X` / `V` copy, cut and paste, `⌘/Ctrl + Z`
   undo.
 
+## Beat mode
+
+A switch in the header (and on the start screen) flips between **Editor**, the app exactly as described above, and **Beat**, which adds tools for making music. Switching back to Editor restores the original behaviour: no grid, no snapping, and the mix is summed exactly as before. The mode and the beat settings are remembered between launches.
+
+Beat mode adds:
+
+- **Tempo and grid** — set the BPM; the ruler counts bars instead of seconds, and bar/beat lines are drawn across every lane. The toolbar shows the playhead as `bar.beat.sixteenth`.
+- **Snap** — bar, beat, 1/8 or 1/16 (or off). Clicking to seek, drag-selecting and ⌘/Ctrl-dragging a track all land on the grid.
+- **Master bus** — a master volume and a brickwall limiter on the summed mix, applied identically in playback and in the master export, so a dense session no longer clips.
+- **Pattern maker** — a 16-step grid of built-in synthesised voices (kick, 808, snare, clap, hat, open hat, chime), each row with its own volume, note (808 and chime), choke and mute. Any row can load a sample file instead. Set the length in bars and the swing, audition it with **Preview loop** (edits are heard live), then **Add to session**: it is rendered to an ordinary clip at the start of the bar the playhead is in. Sounds that ring past the end wrap round to the start, so the clip loops seamlessly with Repeat or paste. The ▦ button on a pattern track reopens its grid.
+
+The voices are generated in `audio/synth.rs` — no sample files ship with the app, so there is nothing to license.
+
 ## How it is put together
 
 ```
@@ -74,6 +87,9 @@ src-tauri/src/
   audio/engine.rs         cpal output stream + the mixer
   audio/edit.rs           delete, crop, copy and paste over sample buffers
   audio/export.rs         master rendering and WAV writing
+  audio/master.rs         master bus: gain and limiter (beat mode)
+  audio/synth.rs          built-in drum and chime voices (beat mode)
+  audio/pattern.rs        step pattern -> clip renderer (beat mode)
   audio/mod.rs            ClipStore (decoded audio, undo history) and Clipboard
   commands.rs             import / peaks / mix / transport / edit / clipboard / export
 ```

@@ -1,5 +1,7 @@
 import { SUPPORTED_EXTENSIONS } from "../lib/api";
 import { isRunningInTauri } from "../lib/tauri";
+import type { AppMode } from "../types";
+import { ModeSwitch } from "./ModeSwitch";
 
 interface Props {
   onBrowse: () => void;
@@ -7,11 +9,28 @@ interface Props {
   isImporting: boolean;
   importingName: string | null;
   error: string | null;
+  mode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+  /** Beat mode: start from an empty session with a pattern, no files needed. */
+  onNewPattern: () => void;
 }
 
-export function ImportScreen({ onBrowse, isDragging, isImporting, importingName, error }: Props) {
+export function ImportScreen({
+  onBrowse,
+  isDragging,
+  isImporting,
+  importingName,
+  error,
+  mode,
+  onModeChange,
+  onNewPattern,
+}: Props) {
   return (
     <div className="import">
+      <div className="import__mode">
+        <ModeSwitch mode={mode} onChange={onModeChange} />
+      </div>
+
       {!isRunningInTauri() && (
         <div className="import__brand">
           <h1>zwaveEditor</h1>
@@ -45,6 +64,20 @@ export function ImportScreen({ onBrowse, isDragging, isImporting, importingName,
           </>
         )}
       </button>
+
+      {mode === "beat" && (
+        <button
+          type="button"
+          className="import__pattern"
+          onClick={onNewPattern}
+          disabled={isImporting}
+        >
+          <span className="import__pattern-title">Start a beat</span>
+          <span className="import__pattern-hint">
+            Program drums, 808s and chimes on a step grid — no files needed
+          </span>
+        </button>
+      )}
 
       {error && <p className="import__error">{error}</p>}
 
