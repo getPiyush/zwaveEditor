@@ -6,10 +6,11 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::audio::engine::{AudioEngine, Track};
+use crate::audio::engine::{AudioEngine, Preview, Track};
 use crate::audio::export::BitDepth;
 use crate::audio::recording::Recorder;
 use crate::audio::{decode, edit, export, peaks, ClipEntry, ClipStore, Clipboard};
+use crate::workspace::{self, ProjectSummary, ProjectTrack, TuneInfo, Workspace};
 
 /// Everything the UI needs to describe an imported file.
 #[derive(Serialize)]
@@ -325,6 +326,8 @@ pub fn set_mix(
 
 #[tauri::command]
 pub fn transport_play(engine: State<AudioEngine>) {
+    // The session and a tune preview would only talk over each other.
+    engine.mixer.pause_preview();
     engine.mixer.play();
 }
 
@@ -546,6 +549,245 @@ pub fn adjust_time(
         },
         |entry| clip_info(clip_id, entry),
     )
+}
+
+/// Joins a whole audio file onto a clip: after its end, or before its start.
+#[tauri::command(async)]
+pub fn insert_audio_file(
+    clip_id: u64,
+    path: String,
+    at_end: bool,
+    store: State<ClipStore>,
+) -> Result<ClipInfo, String> {
+    let insert = decode::decode_file(Path::new(&path))?;
+    store.edit(
+        clip_id,
+        |audio| {
+            let at = if at_end { audio.frame_count() } else { 0 };
+            edit::paste_range(audio, at, at, &insert)
+        },
+        |entry| clip_info(clip_id, entry),
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceInfo {
+    pub path: String,
+    pub is_default: bool,
+    pub default_path: String,
+}
+
+fn workspace_info(workspace: &Workspace) -> WorkspaceInfo {
+    WorkspaceInfo {
+        path: workspace.root().to_string_lossy().to_string(),
+        is_default: workspace.is_default(),
+        default_path: workspace.default_root().to_string_lossy().to_string(),
+    }
+}
+
+#[tauri::command]
+pub fn get_workspace(workspace: State<Workspace>) -> WorkspaceInfo {
+    workspace_info(&workspace)
+}
+
+/// Points the workspace at a folder, or back at the default with no path.
+#[tauri::command]
+pub fn set_workspace(
+    path: Option<String>,
+    workspace: State<Workspace>,
+    engine: State<AudioEngine>,
+) -> Result<WorkspaceInfo, String> {
+    workspace.set_root(path.map(PathBuf::from))?;
+    // The loaded preview belongs to the tunes folder that was just left.
+    engine.mixer.clear_preview();
+    Ok(workspace_info(&workspace))
+}
+
+#[tauri::command]
+pub fn list_tunes(workspace: State<Workspace>) -> Vec<TuneInfo> {
+    workspace::list_tunes(&workspace.tunes_dir())
+}
+
+/// Copies files into the workspace's tunes folder. Returns the library as it
+/// now stands, so the files that did make it show up even when one did not.
+#[tauri::command(async)]
+pub fn add_tunes(paths: Vec<String>, workspace: State<Workspace>) -> AddedTunes {
+    let tunes_dir = workspace.tunes_dir();
+    let failures = paths
+        .iter()
+        .filter_map(|path| workspace::add_tune(&tunes_dir, Path::new(path)).err())
+        .collect();
+    AddedTunes {
+        tunes: workspace::list_tunes(&tunes_dir),
+        failures,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedTunes {
+    pub tunes: Vec<TuneInfo>,
+    pub failures: Vec<String>,
+}
+
+/// Deletes a tune's file from the tunes folder.
+#[tauri::command]
+pub fn remove_tune(
+    name: String,
+    workspace: State<Workspace>,
+    engine: State<AudioEngine>,
+) -> Result<Vec<TuneInfo>, String> {
+    let tunes_dir = workspace.tunes_dir();
+    if engine.mixer.preview_name().as_deref() == Some(name.as_str()) {
+        engine.mixer.clear_preview();
+    }
+    workspace::remove_tune(&tunes_dir, &name)?;
+    Ok(workspace::list_tunes(&tunes_dir))
+}
+
+/// Plays a tune from the tunes folder: resuming it if it is the one already
+/// loaded, otherwise starting it from the top.
+#[tauri::command(async)]
+pub fn preview_play(
+    name: String,
+    workspace: State<Workspace>,
+    engine: State<AudioEngine>,
+) -> Result<(), String> {
+    engine.mixer.pause();
+    if engine.mixer.preview_name().as_deref() == Some(name.as_str())
+        && engine.mixer.resume_preview()
+    {
+        return Ok(());
+    }
+
+    engine.mixer.pause_preview();
+    let path = workspace::tune_path(&workspace.tunes_dir(), &name)?;
+    let audio = decode::decode_file(&path)?;
+    engine.mixer.start_preview(Preview {
+        name,
+        audio: std::sync::Arc::new(audio),
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn preview_pause(engine: State<AudioEngine>) {
+    engine.mixer.pause_preview();
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewState {
+    /// The tune that is loaded, playing or paused.
+    pub name: Option<String>,
+    pub playing: bool,
+    pub position_secs: f64,
+    pub duration_secs: f64,
+}
+
+#[tauri::command]
+pub fn preview_state(engine: State<AudioEngine>) -> PreviewState {
+    PreviewState {
+        name: engine.mixer.preview_name(),
+        playing: engine.mixer.is_preview_playing(),
+        position_secs: engine.mixer.preview_position(),
+        duration_secs: engine.mixer.preview_duration(),
+    }
+}
+
+/// One track of a project being saved: which clip, and how it is staged.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTrackSetting {
+    pub clip_id: u64,
+    pub gain: f32,
+    pub muted: bool,
+    pub soloed: bool,
+    pub in_master: bool,
+    #[serde(default)]
+    pub offset_secs: f64,
+}
+
+/// One track of a project that was opened, shaped like the UI's own `Track`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedTrack {
+    pub clip: ClipInfo,
+    pub gain: f32,
+    pub muted: bool,
+    pub soloed: bool,
+    pub in_master: bool,
+    pub offset: f64,
+}
+
+/// Saves the session into the workspace as a project. Returns its folder.
+#[tauri::command(async)]
+pub fn save_project(
+    name: String,
+    tracks: Vec<ProjectTrackSetting>,
+    workspace: State<Workspace>,
+    store: State<ClipStore>,
+) -> Result<String, String> {
+    let mut resolved = Vec::with_capacity(tracks.len());
+    for setting in tracks {
+        let (audio, track_name) = store.with(setting.clip_id, |entry| {
+            (std::sync::Arc::clone(&entry.audio), entry.name.clone())
+        })?;
+        resolved.push((
+            ProjectTrack {
+                name: track_name,
+                file: String::new(),
+                gain: setting.gain,
+                muted: setting.muted,
+                soloed: setting.soloed,
+                in_master: setting.in_master,
+                offset_secs: start_offset(setting.offset_secs),
+            },
+            audio,
+        ));
+    }
+
+    let dir = workspace::save_project(&workspace.projects_dir(), &name, resolved)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn list_projects(workspace: State<Workspace>) -> Vec<ProjectSummary> {
+    workspace::list_projects(&workspace.projects_dir())
+}
+
+/// Loads a project's tracks as new clips. Nothing is opened if any track fails.
+#[tauri::command(async)]
+pub fn open_project(
+    name: String,
+    workspace: State<Workspace>,
+    store: State<ClipStore>,
+) -> Result<Vec<OpenedTrack>, String> {
+    let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+
+    let mut decoded = Vec::with_capacity(project.tracks.len());
+    for track in project.tracks {
+        let path = dir.join(&track.file);
+        let audio = decode::decode_file(&path).map_err(|e| format!("{}: {e}", track.name))?;
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        decoded.push((track, audio, path, size));
+    }
+
+    decoded
+        .into_iter()
+        .map(|(track, audio, path, size)| {
+            let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
+            Ok(OpenedTrack {
+                clip: store.with(id, |entry| clip_info(id, entry))?,
+                gain: track.gain,
+                muted: track.muted,
+                soloed: track.soloed,
+                in_master: track.in_master,
+                offset: start_offset(track.offset_secs),
+            })
+        })
+        .collect()
 }
 
 /// A track cannot start before the session does.

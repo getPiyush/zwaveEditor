@@ -7,6 +7,7 @@ import {
   cropRange,
   deleteRange,
   importAudio,
+  insertAudioFile,
   isSupportedFile,
   pasteRange,
   pickAudioFiles,
@@ -14,7 +15,6 @@ import {
   takeStartupFiles,
   undoEdit,
 } from "./lib/api";
-import { ImportScreen } from "./components/ImportScreen";
 import { SessionScreen } from "./components/SessionScreen";
 import type { ClipInfo, Selection, Track } from "./types";
 
@@ -132,6 +132,21 @@ export default function App() {
     [replaceClip],
   );
 
+  /** Joins a whole file onto a track, before or after what is there. */
+  const insertFile = useCallback(
+    async (clipId: number, path: string, atEnd: boolean) => {
+      try {
+        replaceClip(await insertAudioFile(clipId, path, atEnd));
+        setError(null);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return false;
+      }
+    },
+    [replaceClip],
+  );
+
   const changeTrack = useCallback((clipId: number, changes: Partial<Track>) => {
     setTracks((current) =>
       current.map((track) => (track.clip.id === clipId ? { ...track, ...changes } : track)),
@@ -147,6 +162,15 @@ export default function App() {
     setTracks((current) => {
       current.forEach((track) => void closeClip(track.clip.id));
       return [];
+    });
+    setError(null);
+  }, []);
+
+  /** Swaps the whole session for an opened project's tracks. */
+  const replaceSession = useCallback((opened: Track[]) => {
+    setTracks((current) => {
+      current.forEach((track) => void closeClip(track.clip.id));
+      return opened;
     });
     setError(null);
   }, []);
@@ -196,34 +220,27 @@ export default function App() {
         unlisten = fn;
       })
       .catch(() => {
-        /* Not running inside Tauri; the browse button still works. */
+        /* Not running inside Tauri; "Add files…" still works. */
       });
 
     return () => unlisten?.();
   }, [openPaths]);
 
-  if (tracks.length > 0) {
-    return (
-      <SessionScreen
-        tracks={tracks}
-        onAddFiles={browse}
-        onTrackChange={changeTrack}
-        onTrackRemove={removeTrack}
-        onCloseAll={closeAll}
-        onEditSelection={editSelection}
-        onCopySelection={copySelection}
-        onPaste={pasteInto}
-        onUndoTrack={undoTrack}
-        onRecordingComplete={addRecording}
-        isImporting={importing !== null}
-        error={error}
-      />
-    );
-  }
-
   return (
-    <ImportScreen
-      onBrowse={browse}
+    <SessionScreen
+      tracks={tracks}
+      onAddFiles={browse}
+      onOpenPaths={openPaths}
+      onInsertFile={insertFile}
+      onProjectOpened={replaceSession}
+      onTrackChange={changeTrack}
+      onTrackRemove={removeTrack}
+      onCloseAll={closeAll}
+      onEditSelection={editSelection}
+      onCopySelection={copySelection}
+      onPaste={pasteInto}
+      onUndoTrack={undoTrack}
+      onRecordingComplete={addRecording}
       isDragging={isDragging}
       isImporting={importing !== null}
       importingName={importing}

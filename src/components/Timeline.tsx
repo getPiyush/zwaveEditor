@@ -12,7 +12,7 @@ import {
   xToTime,
   zoomView,
 } from "../lib/waveform";
-import type { Selection, Track, ViewRange } from "../types";
+import type { Selection, Track, TuneDrop, ViewRange } from "../types";
 import { TrackHeader } from "./TrackHeader";
 import { TrackWaveform } from "./TrackWaveform";
 
@@ -37,6 +37,8 @@ interface Props {
   /** The track paste lands on when nothing is selected. */
   activeClipId: number | null;
   onActiveTrackChange: (clipId: number) => void;
+  /** Where a tune being dragged in from the quick-tunes panel would land. */
+  tuneDrop: TuneDrop | null;
 }
 
 /** Below this many pixels a drag is treated as a click, not a selection. */
@@ -57,6 +59,7 @@ export function Timeline({
   onSelectionChange,
   activeClipId,
   onActiveTrackChange,
+  tuneDrop,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLCanvasElement>(null);
@@ -308,6 +311,27 @@ export function Timeline({
                         1,
                         timeToX(track.offset + selection.end, view, laneWidth) -
                           timeToX(track.offset + selection.start, view, laneWidth),
+                      ),
+                    }}
+                  />
+                )}
+                {tuneDrop && tuneDrop.kind !== "new" && tuneDrop.clipId === track.clip.id && (
+                  <div
+                    className="track__drop"
+                    style={{
+                      // Pinned inside the lane, so it shows even when that
+                      // end of the track is scrolled out of view.
+                      left: Math.min(
+                        Math.max(
+                          timeToX(
+                            track.offset +
+                              (tuneDrop.kind === "after" ? track.clip.durationSecs : 0),
+                            view,
+                            laneWidth,
+                          ),
+                          0,
+                        ),
+                        Math.max(0, laneWidth - 3),
                       ),
                     }}
                   />

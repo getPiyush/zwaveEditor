@@ -63,3 +63,38 @@ export interface InputDeviceInfo {
   sampleRate: number;
   channels: number;
 }
+
+/** The folder that holds the tunes library and saved projects. */
+export interface WorkspaceInfo {
+  path: string;
+  /** True until the user picks a folder of their own. */
+  isDefault: boolean;
+  defaultPath: string;
+}
+
+/** One file in the workspace's tunes folder. */
+export interface TuneInfo {
+  name: string;
+  path: string;
+  sizeBytes: number;
+}
+
+/** The tune being auditioned from the quick-tunes panel, if any. */
+export interface PreviewState {
+  name: string | null;
+  playing: boolean;
+  positionSecs: number;
+  durationSecs: number;
+}
+
+/** Where a tune dragged out of the panel would land. */
+export type TuneDrop =
+  | { kind: "new" }
+  | { kind: "before" | "after"; clipId: number; trackName: string };
+
+export interface ProjectSummary {
+  name: string;
+  trackCount: number;
+  /** Seconds since the Unix epoch. */
+  savedAt: number;
+}

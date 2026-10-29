@@ -62,10 +62,12 @@ button:disabled {
   cursor: default;
 }
 
-/* ---------- Import screen ---------- */
+/* ---------- Empty session ---------- */
 
-.import {
-  height: 100%;
+.empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -73,18 +75,6 @@ button:disabled {
   gap: 26px;
   padding: 32px 16px calc(32px + env(safe-area-inset-bottom));
   text-align: center;
-}
-
-.import__brand h1 {
-  margin: 0 0 6px;
-  font-size: 26px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.import__brand p {
-  margin: 0;
-  color: var(--text-dim);
 }
 
 .dropzone {
@@ -100,11 +90,6 @@ button:disabled {
   border: 2px dashed var(--border);
   border-radius: 16px;
   transition: border-color 0.18s ease, background 0.18s ease;
-}
-
-.dropzone:hover:not(:disabled) {
-  border-color: #33425c;
-  background: var(--surface-raised);
 }
 
 .dropzone--active {
@@ -124,6 +109,12 @@ button:disabled {
 .dropzone__hint {
   color: var(--text-dim);
   font-size: 13px;
+}
+
+.dropzone__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .wave-icon {
@@ -152,12 +143,6 @@ button:disabled {
   .spinner {
     animation-duration: 2.4s;
   }
-}
-
-.import__error {
-  margin: 0;
-  max-width: 560px;
-  color: var(--danger);
 }
 
 .formats {
@@ -230,6 +215,17 @@ button:disabled {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.session__tunes {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+}
+
+.session__tunes--on {
+  border-color: var(--accent);
+  color: var(--accent-soft);
 }
 
 .session__error {
@@ -672,6 +668,16 @@ button:disabled {
 
 /* ---------- Selection ---------- */
 
+.track__drop {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  pointer-events: none;
+}
+
 .track__selection {
   position: absolute;
   top: 0;
@@ -786,7 +792,8 @@ button:disabled {
   color: var(--text-dim);
 }
 
-.modal__field select {
+.modal__field select,
+.modal__field input[type="text"] {
   flex: 1;
   padding: 7px 10px;
   color: var(--text);
@@ -1089,4 +1096,245 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.modal__workspace {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- Projects ---------- */
+
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.project-list button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 9px 12px;
+  text-align: left;
+}
+
+.project-list button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.project-list__name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.project-list__meta {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* ---------- Workspace ---------- */
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.workspace__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workspace__label {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.workspace__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Truncate from the left: the end of a path is the part that tells folders apart. */
+  direction: rtl;
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.workspace__error {
+  margin: 0;
+  color: var(--danger);
+}
+
+/* ---------- Quick tunes ---------- */
+
+.tunes-panel {
+  position: fixed;
+  top: 118px;
+  right: 16px;
+  z-index: 50;
+  width: min(300px, calc(100vw - 32px));
+  max-height: min(460px, calc(100vh - 150px));
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+}
+
+.tunes-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tunes-panel__header h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tunes-panel__error {
+  margin: 0;
+  padding: 8px 14px;
+  background: rgba(255, 107, 107, 0.1);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.tunes-panel__empty {
+  margin: 0;
+  padding: 22px 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.tunes-panel__list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.tunes-panel__footer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.tune {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.tune:hover {
+  background: var(--surface-raised);
+}
+
+.tune--dragging {
+  opacity: 0.5;
+}
+
+/* How far the preview has played, drawn behind the row. */
+.tune__progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(61, 139, 253, 0.16);
+  pointer-events: none;
+}
+
+.tune__button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.tune__remove {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+.tune__remove:hover {
+  color: var(--danger);
+}
+
+.tune__name {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* Follows the pointer while a tune is dragged towards the editor. */
+.tune-ghost {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+  padding: 6px 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.tune-ghost__name,
+.tune-ghost__target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tune-ghost__target {
+  color: var(--accent-soft);
+  font-size: 11px;
 }
