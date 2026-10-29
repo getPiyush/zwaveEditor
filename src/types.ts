@@ -33,6 +33,8 @@ export interface Track {
   inMaster: boolean;
   /** Where the track starts on the session timeline, in seconds. */
   offset: number;
+  /** Set when the track was made in the pattern editor, so it can be reopened. */
+  pattern?: Pattern;
 }
 
 /** A range selected on one track, in seconds from the start of the clip. */
@@ -97,4 +99,55 @@ export interface ProjectSummary {
   trackCount: number;
   /** Seconds since the Unix epoch. */
   savedAt: number;
+}
+
+/** Editor is the original app; Beat adds tempo, grid, master bus and patterns. */
+export type AppMode = "editor" | "beat";
+
+export type SnapDivision = "off" | "bar" | "beat" | "eighth" | "sixteenth";
+
+export interface BeatSettings {
+  bpm: number;
+  snap: SnapDivision;
+  masterGain: number;
+  limiter: boolean;
+}
+
+export interface MasterBus {
+  gain: number;
+  limiter: boolean;
+}
+
+export type SynthVoice =
+  | "kick"
+  | "bass808"
+  | "snare"
+  | "clap"
+  | "closedHat"
+  | "openHat"
+  | "chime";
+
+export type RowSound =
+  | { kind: "synth"; voice: SynthVoice }
+  | { kind: "sample"; path: string; name: string };
+
+export interface PatternRow {
+  id: string;
+  sound: RowSound;
+  /** One per sixteenth note. */
+  steps: boolean[];
+  gain: number;
+  /** MIDI note: pitch for the 808 and chime; for samples, 60 plays them as recorded. */
+  note: number;
+  /** Each hit cuts off the one before. */
+  choke: boolean;
+  muted: boolean;
+}
+
+export interface Pattern {
+  bpm: number;
+  bars: number;
+  /** 0 straight, 1 fully swung. */
+  swing: number;
+  rows: PatternRow[];
 }

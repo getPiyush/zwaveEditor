@@ -72,6 +72,8 @@ button:disabled {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  /* When the content is taller than the space, keep its top reachable. */
+  justify-content: safe center;
   gap: 26px;
   padding: 32px 16px calc(32px + env(safe-area-inset-bottom));
   text-align: center;
@@ -1337,4 +1339,350 @@ button:disabled {
 .tune-ghost__target {
   color: var(--accent-soft);
   font-size: 11px;
+}
+
+/* ---------- Beat mode ---------- */
+
+.mode-switch {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.mode-switch .mode-switch__option {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mode-switch .mode-switch__option--on {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.mode-switch .mode-switch__option--on:last-child {
+  background: rgba(232, 163, 61, 0.16);
+  color: #f5cd8c;
+  box-shadow: inset 0 0 0 1px rgba(232, 163, 61, 0.45);
+}
+
+.beatbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(90deg, rgba(232, 163, 61, 0.07), transparent 60%);
+  font-size: 12px;
+}
+
+.beatbar__field,
+.beatbar__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.beatbar__label {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+.beatbar__unit {
+  color: var(--text-dim);
+}
+
+.beatbar__bpm {
+  width: 58px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.beatbar__position {
+  min-width: 54px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #f5cd8c;
+}
+
+.beatbar__new {
+  border-color: rgba(232, 163, 61, 0.5);
+  color: #f5cd8c;
+}
+
+.beatbar__spacer {
+  flex: 1;
+}
+
+.beatbar__master input[type="range"] {
+  width: 110px;
+}
+
+.beatbar__db {
+  min-width: 56px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.timeline__grid {
+  position: absolute;
+  left: 0;
+  width: 100%;
+}
+
+.track__pattern {
+  color: #f5cd8c;
+}
+
+.empty__pattern {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: min(520px, 100%);
+  padding: 14px 18px;
+  border: 1px solid rgba(232, 163, 61, 0.45);
+  border-radius: var(--radius);
+  background: rgba(232, 163, 61, 0.08);
+  color: var(--text);
+}
+
+.empty__pattern-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f5cd8c;
+}
+
+.empty__pattern-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---------- Pattern editor ---------- */
+
+.modal__content.pattern {
+  width: min(920px, 100%);
+  display: flex;
+  flex-direction: column;
+}
+
+.pattern__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pattern__tempo {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #f5cd8c;
+}
+
+.pattern__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.pattern__swing input {
+  width: 100px;
+}
+
+.pattern__error {
+  margin: 10px 20px 0;
+}
+
+.pattern__grid-scroll {
+  overflow-x: auto;
+  padding: 12px 20px;
+}
+
+.pattern__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: max-content;
+}
+
+.pattern__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pattern__row--muted .pattern__steps {
+  opacity: 0.35;
+}
+
+.pattern__row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 300px;
+  flex-shrink: 0;
+}
+
+.pattern__sound {
+  width: 108px;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.pattern__note {
+  width: 58px;
+}
+
+.pattern__note--empty {
+  display: inline-block;
+}
+
+.pattern__gain {
+  flex: 1;
+  min-width: 40px;
+}
+
+.toggle--on.toggle--choke {
+  background: #5a3a12 !important;
+  border-color: #a8742c !important;
+  color: #ffe2b8;
+}
+
+.pattern__steps {
+  display: flex;
+  gap: 4px;
+  touch-action: none;
+}
+
+.pattern__steps .pattern__step {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  cursor: pointer;
+}
+
+/* A little gap between beats so the four groups of four read at a glance. */
+.pattern__steps .pattern__step--beat:not(:first-child) {
+  margin-left: 6px;
+}
+
+.pattern__steps .pattern__step {
+  flex-shrink: 0;
+}
+
+/* Form controls in Beat mode, matching the app's dark inputs. */
+.beatbar select,
+.beatbar input[type="number"],
+.pattern select {
+  height: 26px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.beatbar select:focus,
+.beatbar input[type="number"]:focus,
+.pattern select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pattern__steps .pattern__step--beat:not(.pattern__step--on) {
+  background: #1d2839;
+}
+
+.pattern__steps .pattern__step--on {
+  background: #e8a33d;
+  border-color: #f5cd8c;
+  box-shadow: 0 0 8px rgba(232, 163, 61, 0.45);
+}
+
+.pattern__note-text {
+  margin: 0 20px;
+  font-size: 12px;
+  color: #f5cd8c;
+}
+
+.pattern__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.pattern__hint {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.pattern__footer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .beatbar {
+    padding: 7px 8px;
+  }
+
+  .beatbar__spacer {
+    display: none;
+  }
+
+  /* Controls above the steps, so the sound names keep their room. */
+  .pattern__row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pattern__row-head {
+    width: 100%;
+    max-width: 340px;
+  }
+
+  .pattern__sound {
+    width: 116px;
+  }
+
+  .pattern__steps {
+    gap: 3px;
+  }
+
+  .pattern__steps .pattern__step {
+    width: 26px;
+    height: 30px;
+  }
+
+  .pattern__hint {
+    display: none;
+  }
+
+  .modal__backdrop {
+    padding: 8px;
+  }
 }

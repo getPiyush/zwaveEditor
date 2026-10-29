@@ -10,9 +10,19 @@ interface Props {
   onChange: (changes: Partial<Track>) => void;
   onRemove: () => void;
   onUndo: () => void;
+  /** Beat mode, for tracks made in the pattern editor. */
+  onEditPattern?: () => void;
 }
 
-export function TrackHeader({ track, colors, index, onChange, onRemove, onUndo }: Props) {
+export function TrackHeader({
+  track,
+  colors,
+  index,
+  onChange,
+  onRemove,
+  onUndo,
+  onEditPattern,
+}: Props) {
   const { clip } = track;
   // What is typed into the start field, until it is committed.
   const [offsetDraft, setOffsetDraft] = useState<string | null>(null);
@@ -41,6 +51,17 @@ export function TrackHeader({ track, colors, index, onChange, onRemove, onUndo }
         <span className="track__name" title={clip.path}>
           {index + 1}. {clip.name}
         </span>
+        {onEditPattern && (
+          <button
+            type="button"
+            className="track__icon track__pattern"
+            onClick={onEditPattern}
+            title="Edit this pattern"
+            aria-label={`Edit the pattern ${clip.name}`}
+          >
+            ▦
+          </button>
+        )}
         <button
           type="button"
           className="track__icon"

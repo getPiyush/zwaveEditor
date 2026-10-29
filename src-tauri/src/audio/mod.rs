@@ -2,8 +2,11 @@ pub mod decode;
 pub mod edit;
 pub mod engine;
 pub mod export;
+pub mod master;
+pub mod pattern;
 pub mod peaks;
 pub mod recording;
+pub mod synth;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

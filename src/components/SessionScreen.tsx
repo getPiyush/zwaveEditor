@@ -13,6 +13,8 @@ import { isRunningInTauri } from "../lib/tauri";
 import { useTransport } from "../lib/useTransport";
 import { clampView, trackEnd, xToTime, zoomView } from "../lib/waveform";
 import type {
+  AppMode,
+  BeatSettings,
   ClipInfo,
   Selection,
   Track,
@@ -21,7 +23,9 @@ import type {
   ViewRange,
   WorkspaceInfo,
 } from "../types";
+import { BeatBar } from "./BeatBar";
 import { ExportDialog } from "./ExportDialog";
+import { ModeSwitch } from "./ModeSwitch";
 import { AdjustWaveDialog } from "./AdjustWaveDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptySession } from "./EmptySession";
@@ -51,6 +55,13 @@ interface Props {
   isImporting: boolean;
   importingName: string | null;
   error: string | null;
+  mode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+  /** Present in beat mode only. Everything beat-specific keys off it. */
+  beat?: BeatSettings;
+  onBeatChange: (changes: Partial<BeatSettings>) => void;
+  onNewPattern: () => void;
+  onEditPattern: (clipId: number) => void;
 }
 
 /** Where on a track, in clip time, a paste at the playhead lands. */
@@ -76,6 +87,12 @@ export function SessionScreen({
   isImporting,
   importingName,
   error,
+  mode,
+  onModeChange,
+  beat,
+  onBeatChange,
+  onNewPattern,
+  onEditPattern,
 }: Props) {
   const { state, position, anticipate } = useTransport();
   const [view, setView] = useState<ViewRange>({ start: 0, end: 1 });
@@ -421,6 +438,7 @@ export function SessionScreen({
           </p>
         </div>
         <div className="session__actions">
+          <ModeSwitch mode={mode} onChange={onModeChange} />
           <button
             type="button"
             className={`session__tunes${showTunes ? " session__tunes--on" : ""}`}
@@ -470,6 +488,15 @@ export function SessionScreen({
         onZoomOut={() => zoomBy(2)}
         onFit={fitAll}
       />
+
+      {beat && (
+        <BeatBar
+          settings={beat}
+          position={position}
+          onChange={onBeatChange}
+          onNewPattern={onNewPattern}
+        />
+      )}
 
       {selection && selectedTrack && (
         <div className="editbar">
@@ -531,6 +558,7 @@ export function SessionScreen({
           isDragging={isDragging}
           isImporting={isImporting}
           importingName={importingName}
+          onNewPattern={beat ? onNewPattern : undefined}
         />
       ) : (
         <>
@@ -554,6 +582,8 @@ export function SessionScreen({
               activeClipId={activeClipId}
               onActiveTrackChange={setActiveClipId}
               tuneDrop={tuneDrop}
+              beat={beat}
+              onTrackEditPattern={beat ? onEditPattern : undefined}
             />
           </div>
 
@@ -613,7 +643,13 @@ export function SessionScreen({
         />
       )}
 
-      {showExport && <ExportDialog tracks={tracks} onClose={() => setShowExport(false)} />}
+      {showExport && (
+        <ExportDialog
+          tracks={tracks}
+          master={beat ? { gain: beat.masterGain, limiter: beat.limiter } : undefined}
+          onClose={() => setShowExport(false)}
+        />
+      )}
 
       {showRecording && (
         <RecordingDialog

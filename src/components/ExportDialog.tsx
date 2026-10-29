@@ -1,10 +1,12 @@
 import { useState } from "react";
 
 import { exportMaster, exportTracks, pickDirectory, pickSavePath } from "../lib/api";
-import type { BitDepth, Track } from "../types";
+import type { BitDepth, MasterBus, Track } from "../types";
 
 interface Props {
   tracks: Track[];
+  /** Beat mode's master bus; left out in editor mode, which exports as before. */
+  master?: MasterBus;
   onClose: () => void;
 }
 
@@ -15,7 +17,7 @@ const DEPTHS: { value: BitDepth; label: string }[] = [
 ];
 
 /** Exports the tracks that are checked into the master. */
-export function ExportDialog({ tracks, onClose }: Props) {
+export function ExportDialog({ tracks, master, onClose }: Props) {
   const [bitDepth, setBitDepth] = useState<BitDepth>("int16");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -41,7 +43,7 @@ export function ExportDialog({ tracks, onClose }: Props) {
     run(async () => {
       const path = await pickSavePath("master-mix.wav");
       if (!path) return null;
-      const written = await exportMaster(selected, path, bitDepth);
+      const written = await exportMaster(selected, path, bitDepth, master);
       return `Wrote the master mix to ${written}`;
     });
 

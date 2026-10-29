@@ -7,6 +7,8 @@ interface Props {
   isDragging: boolean;
   isImporting: boolean;
   importingName: string | null;
+  /** Beat mode only: start a session from a step pattern, no files needed. */
+  onNewPattern?: () => void;
 }
 
 /** What the session shows before it has any tracks. */
@@ -17,6 +19,7 @@ export function EmptySession({
   isDragging,
   isImporting,
   importingName,
+  onNewPattern,
 }: Props) {
   return (
     <div className="empty">
@@ -56,6 +59,15 @@ export function EmptySession({
           </>
         )}
       </div>
+
+      {onNewPattern && !isImporting && (
+        <button type="button" className="empty__pattern" onClick={onNewPattern}>
+          <span className="empty__pattern-title">Start a beat</span>
+          <span className="empty__pattern-hint">
+            Program drums, 808s and chimes on a step grid — no files needed
+          </span>
+        </button>
+      )}
 
       <div className="formats">
         <span className="formats__label">Supported</span>

@@ -5,6 +5,8 @@ import type {
   BitDepth,
   ClipInfo,
   InputDeviceInfo,
+  MasterBus,
+  Pattern,
   PeakData,
   PreviewState,
   ProjectSummary,
@@ -149,8 +151,14 @@ export function exportMaster(
   tracks: Track[],
   path: string,
   bitDepth: BitDepth,
+  master?: MasterBus,
 ): Promise<string> {
-  return invoke<string>("export_master", { tracks: mixSettings(tracks), path, bitDepth });
+  return invoke<string>("export_master", {
+    tracks: mixSettings(tracks),
+    path,
+    bitDepth,
+    master: master ?? null,
+  });
 }
 
 export function transportPlay(): Promise<void> {
@@ -332,4 +340,24 @@ export function listProjects(): Promise<ProjectSummary[]> {
 /** Loads a project's tracks as new clips, ready to replace the session. */
 export function openProject(name: string): Promise<Track[]> {
   return invoke<Track[]>("open_project", { name });
+}
+
+/** Gain and limiter on the summed mix. Unity gain with no limiter is the original sound. */
+export function setMaster(master: MasterBus): Promise<void> {
+  return invoke("set_master", { master });
+}
+
+/** Renders a step pattern into a new clip on the Rust side. */
+export function renderPattern(pattern: Pattern, name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("render_pattern", { pattern, name });
+}
+
+/** Loops a pattern on its own, outside the timeline. Call again to update it in place. */
+export function previewPattern(pattern: Pattern): Promise<void> {
+  return invoke("preview_pattern", { pattern });
+}
+
+/** Silences the pattern loop started by `previewPattern`. */
+export function stopPatternPreview(): Promise<void> {
+  return invoke("stop_pattern_preview");
 }
