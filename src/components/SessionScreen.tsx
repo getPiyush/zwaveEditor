@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  closeWindow,
   getWorkspace,
+  onWindowClose,
   repeatRange,
   setWorkspace,
+  stopRecording,
   transportPause,
   transportPlay,
   transportSeek,
@@ -17,6 +20,8 @@ import type {
   BeatSettings,
   ClipInfo,
   NewTrackSource,
+  OpenedProject,
+  SavedPattern,
   Selection,
   Track,
   TuneDrop,
@@ -41,12 +46,16 @@ import { TunesPanel } from "./TunesPanel";
 
 interface Props {
   tracks: Track[];
+  patterns: SavedPattern[];
+  /** The pattern editor is open, holding a grid that isn't in the session yet. */
+  patternDraftOpen: boolean;
   onAddFiles: () => void;
   onOpenPaths: (paths: string[]) => void;
   onInsertFile: (clipId: number, path: string, atEnd: boolean) => Promise<boolean>;
-  onProjectOpened: (tracks: Track[]) => void;
+  onProjectOpened: (project: OpenedProject) => void;
   onTrackChange: (clipId: number, changes: Partial<Track>) => void;
   onTrackRemove: (clipId: number) => void;
+  onTrackReorder: (from: number, slot: number) => void;
   onCloseAll: () => void;
   onEditSelection: (kind: "delete" | "crop", selection: Selection) => Promise<boolean>;
   onCopySelection: (selection: Selection) => Promise<number | null>;
@@ -66,6 +75,7 @@ interface Props {
   onBeatChange: (changes: Partial<BeatSettings>) => void;
   onNewPattern: () => void;
   onEditPattern: (clipId: number) => void;
+  onOpenPattern: (id: string) => void;
 }
 
 /**
@@ -77,14 +87,36 @@ function pastePoint(track: Track, playhead: number, filler: boolean): number {
   return filler ? at : Math.min(at, track.clip.durationSecs);
 }
 
+/** Everything a saved project records, to tell whether the session has moved on from it. */
+function sessionSnapshot(tracks: Track[], patterns: SavedPattern[]): string {
+  return JSON.stringify([
+    tracks.map((track) => [
+      track.clip.id,
+      track.clip.version,
+      track.gain,
+      track.muted,
+      track.soloed,
+      track.inMaster,
+      track.offset,
+      track.patternId,
+    ]),
+    patterns,
+  ]);
+}
+
+const EMPTY_SESSION = sessionSnapshot([], []);
+
 export function SessionScreen({
   tracks,
+  patterns,
+  patternDraftOpen,
   onAddFiles,
   onOpenPaths,
   onInsertFile,
   onProjectOpened,
   onTrackChange,
   onTrackRemove,
+  onTrackReorder,
   onCloseAll,
   onEditSelection,
   onCopySelection,
@@ -102,6 +134,7 @@ export function SessionScreen({
   onBeatChange,
   onNewPattern,
   onEditPattern,
+  onOpenPattern,
 }: Props) {
   const { state, position, anticipate } = useTransport();
   const [view, setView] = useState<ViewRange>({ start: 0, end: 1 });
@@ -124,10 +157,33 @@ export function SessionScreen({
   const [showAddTrack, setShowAddTrack] = useState(false);
   const [showAdjustWave, setShowAdjustWave] = useState(false);
   const [showConfirmCloseAll, setShowConfirmCloseAll] = useState(false);
+  // The track waiting on the delete confirmation.
+  const [removingClipId, setRemovingClipId] = useState<number | null>(null);
+  const removingTrack = tracks.find((track) => track.clip.id === removingClipId);
   const [showTunes, setShowTunes] = useState(false);
   const [projectDialog, setProjectDialog] = useState<"save" | "open" | null>(null);
   // The project this session was last saved as or opened from.
   const [projectName, setProjectName] = useState<string | null>(null);
+
+  // What was last saved or opened, against which the session counts as unsaved.
+  const [savedSnapshot, setSavedSnapshot] = useState(EMPTY_SESSION);
+  const snapshot = useMemo(() => sessionSnapshot(tracks, patterns), [tracks, patterns]);
+  const hasUnsavedWork = snapshot !== EMPTY_SESSION && snapshot !== savedSnapshot;
+  const [showClosePrompt, setShowClosePrompt] = useState(false);
+  // The save dialog was opened by the close prompt, so a save also closes the app.
+  const [closeAfterSave, setCloseAfterSave] = useState(false);
+
+  const mustAskBeforeClosing = useRef(false);
+  mustAskBeforeClosing.current = hasUnsavedWork || patternDraftOpen;
+  useEffect(
+    () =>
+      onWindowClose(() => {
+        if (!mustAskBeforeClosing.current) return true;
+        setShowClosePrompt(true);
+        return false;
+      }),
+    [],
+  );
   const [workspace, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   // Where the tune being dragged out of the panel would land right now.
   const [tuneDrop, setTuneDrop] = useState<TuneDrop | null>(null);
@@ -377,6 +433,15 @@ export function SessionScreen({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // While a question is open, nothing else should touch the session.
+      if (showClosePrompt) {
+        if (event.key === "Escape") setShowClosePrompt(false);
+        return;
+      }
+      if (removingClipId !== null) {
+        if (event.key === "Escape") setRemovingClipId(null);
+        return;
+      }
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) {
         return;
       }
@@ -453,6 +518,8 @@ export function SessionScreen({
     activeTrack,
     state.playing,
     state.ready,
+    removingClipId,
+    showClosePrompt,
   ]);
 
   const inMasterCount = tracks.filter((track) => track.inMaster).length;
@@ -525,7 +592,7 @@ export function SessionScreen({
           <button
             type="button"
             onClick={() => setProjectDialog("save")}
-            disabled={tracks.length === 0}
+            disabled={tracks.length === 0 && patterns.length === 0}
           >
             Save project…
           </button>
@@ -535,7 +602,7 @@ export function SessionScreen({
           <button
             type="button"
             onClick={() => setShowConfirmCloseAll(true)}
-            disabled={tracks.length === 0}
+            disabled={tracks.length === 0 && patterns.length === 0}
           >
             Close all
           </button>
@@ -560,8 +627,10 @@ export function SessionScreen({
         <BeatBar
           settings={beat}
           position={position}
+          patterns={patterns}
           onChange={onBeatChange}
           onNewPattern={onNewPattern}
+          onOpenPattern={onOpenPattern}
         />
       )}
 
@@ -646,7 +715,8 @@ export function SessionScreen({
               onViewChange={changeView}
               onSeek={seek}
               onTrackChange={onTrackChange}
-              onTrackRemove={onTrackRemove}
+              onTrackRemove={setRemovingClipId}
+              removingClipId={removingClipId}
               onTrackUndo={(clipId) => void undo(clipId)}
               onHoverTimeChange={setHoverTime}
               selection={selection}
@@ -656,6 +726,7 @@ export function SessionScreen({
               tuneDrop={tuneDrop}
               beat={beat}
               onTrackEditPattern={beat ? onEditPattern : undefined}
+              onTrackReorder={onTrackReorder}
             />
           </div>
 
@@ -701,17 +772,26 @@ export function SessionScreen({
         <ProjectDialog
           mode={projectDialog}
           tracks={tracks}
+          patterns={patterns}
           currentName={projectName}
           workspace={workspace}
           onWorkspaceChange={changeWorkspace}
-          onSaved={setProjectName}
+          onSaved={(name) => {
+            setProjectName(name);
+            setSavedSnapshot(snapshot);
+            if (closeAfterSave) void closeWindow();
+          }}
           onOpened={(name, opened) => {
             onProjectOpened(opened);
             setProjectName(name);
+            setSavedSnapshot(sessionSnapshot(opened.tracks, opened.patterns));
             setSelection(null);
             setLastEdited(null);
           }}
-          onClose={() => setProjectDialog(null)}
+          onClose={() => {
+            setProjectDialog(null);
+            setCloseAfterSave(false);
+          }}
         />
       )}
 
@@ -726,7 +806,7 @@ export function SessionScreen({
       {showRecording && (
         <RecordingDialog
           onClose={() => setShowRecording(false)}
-          onRecordingComplete={handleRecordingComplete}
+          onStop={async () => handleRecordingComplete(await stopRecording())}
         />
       )}
 
@@ -762,10 +842,64 @@ export function SessionScreen({
         />
       )}
 
+      {showClosePrompt && (
+        <ConfirmDialog
+          title={hasUnsavedWork ? "Save before closing?" : "Close zwaveEditor?"}
+          message={[
+            hasUnsavedWork &&
+              `${projectName ? `Your changes to "${projectName}"` : "This session"} ${
+                projectName ? "aren't" : "isn't"
+              } saved, and will be lost if you close without saving.`,
+            patternDraftOpen &&
+              "The pattern open in the editor hasn't been added to the session, so it won't be kept.",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          confirmText={hasUnsavedWork ? "Save…" : "Close anyway"}
+          cancelText="Keep editing"
+          isDangerous={!hasUnsavedWork}
+          onTop={true}
+          secondaryText={hasUnsavedWork ? "Don't save" : undefined}
+          onSecondary={() => void closeWindow()}
+          onConfirm={() => {
+            setShowClosePrompt(false);
+            if (hasUnsavedWork) {
+              setCloseAfterSave(true);
+              setProjectDialog("save");
+            } else {
+              void closeWindow();
+            }
+          }}
+          onCancel={() => setShowClosePrompt(false)}
+        />
+      )}
+
+      {removingTrack && (
+        <ConfirmDialog
+          title="Delete this track?"
+          message={`"${removingTrack.clip.name}" and any edits made to it will be removed from the session. This cannot be undone.${
+            removingTrack.patternId ? " Its pattern stays in the Patterns menu." : ""
+          }`}
+          confirmText="Delete track"
+          cancelText="Keep track"
+          isDangerous={true}
+          clearBackdrop={true}
+          onConfirm={() => {
+            setRemovingClipId(null);
+            onTrackRemove(removingTrack.clip.id);
+          }}
+          onCancel={() => setRemovingClipId(null)}
+        />
+      )}
+
       {showConfirmCloseAll && (
         <ConfirmDialog
           title="Close all tracks?"
-          message={`You have ${tracks.length} track${tracks.length !== 1 ? "s" : ""} open. This will close all of them. This action cannot be undone.`}
+          message={`You have ${tracks.length} track${tracks.length !== 1 ? "s" : ""} open. This will close all of them${
+            patterns.length > 0
+              ? ` and clear the ${patterns.length} pattern${patterns.length !== 1 ? "s" : ""} in this project, unless saved`
+              : ""
+          }. This action cannot be undone.`}
           confirmText="Close all"
           cancelText="Keep open"
           isDangerous={true}

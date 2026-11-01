@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { pickAudioFiles, previewPattern, stopPatternPreview } from "../lib/api";
+import {
+  pickAudioFiles,
+  previewPattern,
+  stopPatternPreview,
+  stopRecordingAsSample,
+} from "../lib/api";
 import {
   noteName,
   noteRange,
@@ -12,12 +17,15 @@ import {
   VOICE_GROUPS,
   voiceInfo,
 } from "../lib/beat";
-import type { Pattern, PatternRow, SynthVoice } from "../types";
+import { moveItem, useReorder } from "../lib/useReorder";
+import type { Pattern, PatternRow, RecordedSample, SynthVoice } from "../types";
+import { RecordingDialog } from "./RecordingDialog";
 
 interface Props {
   initial: Pattern;
   /** The session tempo; the pattern always renders at it. */
   bpm: number;
+  title: string;
   /** Whether committing adds a new track or replaces the one being edited. */
   isUpdate: boolean;
   /** Shown above the footer, e.g. that updating drops audio edits. */
@@ -27,17 +35,29 @@ interface Props {
 }
 
 const MAX_ROWS = 12;
-const BAR_CHOICES = [1, 2, 4, 8, 16];
+const MAX_BARS = 200;
 /** How long edits settle before the preview loop is re-rendered. */
 const PREVIEW_DEBOUNCE_MS = 120;
 
 const SAMPLE_OPTION = "__sample__";
+const RECORD_OPTION = "__record__";
+/** Where a take goes when it isn't replacing an existing row's sound. */
+const NEW_ROW = "__new__";
 
-export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose }: Props) {
+function balanceLabel(pan: number): string {
+  if (pan === 0) return "Balance: centre";
+  return `Balance: ${Math.round(Math.abs(pan) * 100)}% ${pan < 0 ? "left" : "right"}`;
+}
+
+export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, onClose }: Props) {
   const [pattern, setPattern] = useState<Pattern>(() => ({ ...initial, bpm }));
   const [previewing, setPreviewing] = useState(false);
+  // What is typed into the length field, until it is committed.
+  const [barsDraft, setBarsDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The row a take is being recorded for, or NEW_ROW.
+  const [recordFor, setRecordFor] = useState<string | null>(null);
 
   // While a drag paints across steps, every cell it enters takes this value.
   const paint = useRef<boolean | null>(null);
@@ -123,6 +143,9 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
   // The wheel nudges a step's note. React's wheel handler is passive, so this
   // listens natively to stop the grid scrolling at the same time.
   const grid = useRef<HTMLDivElement>(null);
+  const reorder = useReorder(grid, pattern.rows.length, (from, slot) =>
+    setPattern((current) => ({ ...current, rows: moveItem(current.rows, from, slot) })),
+  );
   useEffect(() => {
     const element = grid.current;
     if (!element) return;
@@ -136,7 +159,33 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
     return () => element.removeEventListener("wheel", onWheel);
   }, [nudgeStep]);
 
+  /** Silences the preview, so it isn't picked up by the microphone. */
+  const openRecorder = (target: string) => {
+    void stopPatternPreview().catch(() => {});
+    setPreviewing(false);
+    setRecordFor(target);
+  };
+
+  /** Ends the take, and gives it to the row it was for or to a new one. */
+  const finishRecording = async () => {
+    const sample: RecordedSample = await stopRecordingAsSample();
+    const sound = { kind: "sample" as const, ...sample };
+    const row = pattern.rows.find((r) => r.id === recordFor);
+    if (row) {
+      updateRow(row.id, { sound, ...transposeRow(row, 60 - row.note), choke: false });
+    } else {
+      setPattern((current) => ({
+        ...current,
+        rows: [...current.rows, { ...synthRow("piano"), sound, note: 60, choke: false, gain: 0.9 }],
+      }));
+    }
+  };
+
   const changeSound = async (row: PatternRow, value: string) => {
+    if (value === RECORD_OPTION) {
+      openRecorder(row.id);
+      return;
+    }
     if (value === SAMPLE_OPTION) {
       try {
         const [path] = await pickAudioFiles();
@@ -207,7 +256,7 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
         aria-label="Pattern editor"
       >
         <div className="modal__header">
-          <h2>{isUpdate ? "Edit pattern" : "New pattern"}</h2>
+          <h2>{title}</h2>
           <button className="modal__close" onClick={onClose} aria-label="Close">
             ×
           </button>
@@ -227,18 +276,33 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
 
           <label className="pattern__field">
             Length
-            <select
-              value={pattern.bars}
-              onChange={(event) =>
-                setPattern((current) => ({ ...current, bars: Number(event.target.value) }))
-              }
-            >
-              {BAR_CHOICES.map((bars) => (
-                <option key={bars} value={bars}>
-                  {bars} {bars === 1 ? "bar" : "bars"}
-                </option>
-              ))}
-            </select>
+            <input
+              type="number"
+              className="pattern__bars"
+              min={1}
+              max={MAX_BARS}
+              step={1}
+              value={barsDraft ?? String(pattern.bars)}
+              onChange={(event) => {
+                setBarsDraft(event.target.value);
+                const bars = Number(event.target.value);
+                if (Number.isInteger(bars) && bars >= 1 && bars <= MAX_BARS) {
+                  setPattern((current) => ({ ...current, bars }));
+                }
+              }}
+              onBlur={() => {
+                // Past the limit means as long as it goes; anything else unusable is dropped.
+                if (Number(barsDraft) > MAX_BARS) {
+                  setPattern((current) => ({ ...current, bars: MAX_BARS }));
+                }
+                setBarsDraft(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              title={`1 to ${MAX_BARS} bars. A bar is 4 beats.`}
+            />
+            {pattern.bars === 1 ? "bar" : "bars"}
           </label>
 
           <label className="pattern__field pattern__swing">
@@ -264,9 +328,21 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
 
         <div className="pattern__grid-scroll">
           <div className="pattern__grid" ref={grid}>
-            {pattern.rows.map((row) => (
-              <div key={row.id} className={`pattern__row${row.muted ? " pattern__row--muted" : ""}`}>
+            {pattern.rows.map((row, rowIndex) => (
+              <div
+                key={row.id}
+                className={`pattern__row${row.muted ? " pattern__row--muted" : ""}${reorder.itemClass(rowIndex)}`}
+              >
                 <div className="pattern__row-head">
+                  <button
+                    type="button"
+                    className="drag-handle"
+                    title="Drag to rearrange, or use ↑/↓"
+                    aria-label={`Move row ${rowIndex + 1}`}
+                    {...reorder.handleProps(rowIndex)}
+                  >
+                    ⠿
+                  </button>
                   <select
                     className="pattern__sound"
                     value={row.sound.kind === "synth" ? row.sound.voice : SAMPLE_OPTION}
@@ -286,6 +362,7 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
                     <option value={SAMPLE_OPTION}>
                       {row.sound.kind === "sample" ? `File: ${row.sound.name}` : "Load sample…"}
                     </option>
+                    <option value={RECORD_OPTION}>Record sound…</option>
                   </select>
 
                   {rowIsTuned(row) ? (
@@ -321,6 +398,22 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
                     title={`Volume ${Math.round(row.gain * 100)}%`}
                     aria-label="Row volume"
                   />
+
+                  <span className="pattern__pan" title={`${balanceLabel(row.pan ?? 0)} — double-click to centre`}>
+                    L
+                    <input
+                      type="range"
+                      min={-1}
+                      max={1}
+                      step={0.05}
+                      value={row.pan ?? 0}
+                      onChange={(event) => updateRow(row.id, { pan: Number(event.target.value) })}
+                      onDoubleClick={() => updateRow(row.id, { pan: 0 })}
+                      aria-label="Left/right balance"
+                      aria-valuetext={balanceLabel(row.pan ?? 0)}
+                    />
+                    R
+                  </span>
 
                   <button
                     type="button"
@@ -412,6 +505,14 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
           >
             + Row
           </button>
+          <button
+            type="button"
+            className="btn btn--small"
+            onClick={() => openRecorder(NEW_ROW)}
+            disabled={pattern.rows.length >= MAX_ROWS}
+          >
+            ● Record sound
+          </button>
           <span className="pattern__hint">
             Click or drag across steps · on instruments, pick a note then paint; scroll a step to
             change its note · {STEPS_PER_BAR} steps = 1 bar
@@ -431,6 +532,15 @@ export function PatternDialog({ initial, bpm, isUpdate, note, onCommit, onClose 
           </div>
         </div>
       </div>
+
+      {recordFor !== null && (
+        <RecordingDialog
+          title="Record a sound"
+          hint="Make the sound once, then stop. The silence around it is trimmed, and each lit step plays it."
+          onStop={finishRecording}
+          onClose={() => setRecordFor(null)}
+        />
+      )}
     </div>
   );
 }

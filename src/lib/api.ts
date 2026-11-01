@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
@@ -9,7 +10,10 @@ import type {
   Pattern,
   PeakData,
   PreviewState,
+  OpenedProject,
   ProjectSummary,
+  RecordedSample,
+  SavedPattern,
   Track,
   TransportState,
   TuneInfo,
@@ -213,6 +217,16 @@ export function stopRecording(): Promise<ClipInfo> {
   return invoke<ClipInfo>("stop_recording");
 }
 
+/** Ends a take and keeps it in the workspace as a sound for pattern rows. */
+export function stopRecordingAsSample(): Promise<RecordedSample> {
+  return invoke<RecordedSample>("stop_recording_as_sample");
+}
+
+/** Ends a take and throws it away. */
+export function cancelRecording(): Promise<void> {
+  return invoke("cancel_recording");
+}
+
 export function repeatRange(
   clipId: number,
   start: number,
@@ -343,7 +357,11 @@ export function previewState(): Promise<PreviewState> {
 }
 
 /** Saves the session into the workspace. Returns the project's folder. */
-export function saveProject(name: string, tracks: Track[]): Promise<string> {
+export function saveProject(
+  name: string,
+  tracks: Track[],
+  patterns: SavedPattern[],
+): Promise<string> {
   return invoke<string>("save_project", {
     name,
     tracks: tracks.map((track) => ({
@@ -353,7 +371,9 @@ export function saveProject(name: string, tracks: Track[]): Promise<string> {
       soloed: track.soloed,
       inMaster: track.inMaster,
       offsetSecs: track.offset,
+      patternId: track.patternId,
     })),
+    patterns,
   });
 }
 
@@ -361,9 +381,38 @@ export function listProjects(): Promise<ProjectSummary[]> {
   return invoke<ProjectSummary[]>("list_projects");
 }
 
-/** Loads a project's tracks as new clips, ready to replace the session. */
-export function openProject(name: string): Promise<Track[]> {
-  return invoke<Track[]>("open_project", { name });
+/** Loads a project's tracks as new clips, and its patterns, ready to replace the session. */
+export function openProject(name: string): Promise<OpenedProject> {
+  return invoke<OpenedProject>("open_project", { name });
+}
+
+/**
+ * Asks whether the window may close, on every attempt: true lets it, false keeps
+ * it open. Returns a function that stops listening.
+ */
+export function onWindowClose(mayClose: () => boolean): () => void {
+  let stopped = false;
+  let unlisten: (() => void) | undefined;
+  getCurrentWindow()
+    .onCloseRequested((event) => {
+      if (!mayClose()) event.preventDefault();
+    })
+    .then((fn) => {
+      if (stopped) fn();
+      else unlisten = fn;
+    })
+    .catch(() => {
+      /* Not running inside Tauri. */
+    });
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}
+
+/** Closes the window for good, without asking `onWindowClose` again. */
+export function closeWindow(): Promise<void> {
+  return getCurrentWindow().destroy();
 }
 
 /** Gain and limiter on the summed mix. Unity gain with no limiter is the original sound. */

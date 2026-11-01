@@ -51,11 +51,15 @@ The mode and the beat settings are remembered between launches (`localStorage` k
    - For chords, stack rows on the same steps. **+ Row** starts a Piano row.
    - Each row has volume, a note (808, Tom and every instrument), **C** (choke: each hit cuts off the last, good for 808s and open hats) and **M** (mute).
    - Any row can use **Load sample…** to play your own file instead (C4 plays it as recorded).
-   - Length is 1–16 bars, and swing goes from 0 to 60%.
+   - **● Record sound** (or **Record sound…** in a row's sound menu) makes a microphone take that row's sound. Silence around it is trimmed, and the file goes in `samples/` in the workspace.
+   - Drag a row's **⠿** handle to move it, or focus it and press ↑/↓. Timeline tracks have the same handle.
+   - Each row has an **L–R** balance slider; double-click to centre it.
+   - Length is 1–200 bars (the preview loops at most 8 of them), and swing goes from 0 to 60%.
    - **Preview loop** plays the pattern on its own while you edit it.
    - **Add to session** renders it to a normal track at the start of the current bar.
    - Tails wrap round to the start, so the clip loops seamlessly with Repeat or paste.
-   - The **▦** button on a pattern track reopens its grid.
+   - The **▦** button on a pattern track reopens its grid. **Update track** changes the pattern and every track made from it.
+   - Every pattern added is kept in the project and saved with it, even after its tracks are removed. The **Patterns** menu in the toolbar reopens any of them; **Add to session** places it again, and a changed grid is kept as a new pattern.
 
 The default pattern is a boom-bap starter at 90 BPM: kick on steps 1, 8 and 11, an 808 on 1 and 11, snare on 2 and 4, eighth-note hats, and 20% swing.
 
@@ -142,9 +146,9 @@ Note anything that sounds or looks off, especially **which drum sounds need work
 
 ## 7. Known gaps and possible next steps
 
-1. **Saved projects don't keep the step grid.** A reopened project's pattern tracks play fine, but ▦ is gone. Fix: store `track.pattern` in the project file (`workspace.rs` `ProjectTrack`) and return it from `open_project`.
-2. **Keyboard shortcuts while a dialog is open.** Space and Delete still reach the session, the same as with the existing dialogs. Worth gating if it gets in the way.
-3. **Sound tuning.** The voices are a first pass; adjust them after listening.
+1. **Keyboard shortcuts while a dialog is open.** Space and Delete still reach the session, the same as with the existing dialogs. Worth gating if it gets in the way.
+2. **Sound tuning.** The voices are a first pass; adjust them after listening.
+3. **Patterns can't be renamed or deleted yet.** They are kept for the life of the project.
 4. Possible additions:
    - a metronome for recording over a beat
    - per-step velocity or accents

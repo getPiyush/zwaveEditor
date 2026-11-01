@@ -1,17 +1,26 @@
 import { useState } from "react";
 
 import { clampBpm, formatBarBeat, MAX_BPM, MIN_BPM, SNAP_OPTIONS } from "../lib/beat";
-import type { BeatSettings, SnapDivision } from "../types";
+import type { BeatSettings, SavedPattern, SnapDivision } from "../types";
 
 interface Props {
   settings: BeatSettings;
   position: number;
+  patterns: SavedPattern[];
   onChange: (changes: Partial<BeatSettings>) => void;
   onNewPattern: () => void;
+  onOpenPattern: (id: string) => void;
 }
 
 /** Beat mode's toolbar: tempo, snap, the pattern maker, and the master bus. */
-export function BeatBar({ settings, position, onChange, onNewPattern }: Props) {
+export function BeatBar({
+  settings,
+  position,
+  patterns,
+  onChange,
+  onNewPattern,
+  onOpenPattern,
+}: Props) {
   // What is typed into the tempo field, until it is committed.
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
 
@@ -71,6 +80,24 @@ export function BeatBar({ settings, position, onChange, onNewPattern }: Props) {
       <button type="button" className="beatbar__new" onClick={onNewPattern}>
         + New pattern
       </button>
+
+      {patterns.length > 0 && (
+        <select
+          value=""
+          onChange={(event) => onOpenPattern(event.target.value)}
+          title="Every pattern in this project"
+          aria-label="Open a pattern from this project"
+        >
+          <option value="" disabled hidden>
+            Patterns ({patterns.length})
+          </option>
+          {patterns.map(({ id, name, pattern }) => (
+            <option key={id} value={id}>
+              {name} · {pattern.bpm} BPM
+            </option>
+          ))}
+        </select>
+      )}
 
       <div className="beatbar__spacer" />
 

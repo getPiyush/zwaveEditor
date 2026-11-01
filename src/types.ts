@@ -33,8 +33,8 @@ export interface Track {
   inMaster: boolean;
   /** Where the track starts on the session timeline, in seconds. */
   offset: number;
-  /** Set when the track was made in the pattern editor, so it can be reopened. */
-  pattern?: Pattern;
+  /** The project pattern this track was rendered from, so it can be reopened. */
+  patternId?: string;
 }
 
 /** A range selected on one track, in seconds from the start of the clip. */
@@ -154,6 +154,8 @@ export interface PatternRow {
   /** One per sixteenth note. */
   steps: boolean[];
   gain: number;
+  /** Left/right balance: -1 is left only, 0 centred, 1 right only. Missing means centred. */
+  pan?: number;
   /**
    * A note per step, for melodies on tuned rows. A missing or null entry
    * plays `note`.
@@ -172,4 +174,23 @@ export interface Pattern {
   /** 0 straight, 1 fully swung. */
   swing: number;
   rows: PatternRow[];
+}
+
+/** A take saved as a file in the workspace, for a pattern row to play. */
+export interface RecordedSample {
+  path: string;
+  name: string;
+}
+
+/** A pattern kept in the project, whether or not a track still uses it. */
+export interface SavedPattern {
+  id: string;
+  name: string;
+  pattern: Pattern;
+}
+
+/** What opening a project hands back, ready to replace the session. */
+export interface OpenedProject {
+  tracks: Track[];
+  patterns: SavedPattern[];
 }

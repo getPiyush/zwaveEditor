@@ -16,6 +16,13 @@ use super::synth::{self, Voice};
 /// Patterns are rendered at this rate; the mixer resamples as it does for any clip.
 pub const PATTERN_RATE: u32 = 44_100;
 
+/// The longest pattern. At 90 BPM this is about 9 minutes of audio.
+const MAX_BARS: u32 = 200;
+
+/// The most a preview renders. The grid only repeats, so a loop this long sounds
+/// the same as the whole pattern, and edits stay quick however long it is.
+pub const PREVIEW_BARS: u32 = 8;
+
 /// One row of the grid is a sixteenth note per step.
 const STEPS_PER_BEAT: f64 = 4.0;
 
@@ -42,6 +49,9 @@ pub struct PatternRow {
     pub steps: Vec<bool>,
     #[serde(default = "unity")]
     pub gain: f32,
+    /// Left/right balance: -1 is left only, 0 both as they are, 1 right only.
+    #[serde(default)]
+    pub pan: f32,
     /// MIDI note number, for tuned voices and for repitching samples (60 = as recorded).
     #[serde(default = "middle_c")]
     pub note: f32,
@@ -93,8 +103,8 @@ impl Pattern {
         if !self.bpm.is_finite() || !(20.0..=400.0).contains(&self.bpm) {
             return Err(format!("tempo must be between 20 and 400 BPM, not {}", self.bpm));
         }
-        if self.bars == 0 || self.bars > 64 {
-            return Err("a pattern must be between 1 and 64 bars long".to_string());
+        if self.bars == 0 || self.bars > MAX_BARS {
+            return Err(format!("a pattern must be between 1 and {MAX_BARS} bars long"));
         }
         if self.rows.is_empty() {
             return Err("the pattern has no rows".to_string());
@@ -130,6 +140,10 @@ pub fn render(pattern: &Pattern) -> Result<DecodedAudio, String> {
             continue;
         }
         let gain = row.gain.clamp(0.0, 2.0);
+        // A balance, not a pan law: the far side drops and the near side stays
+        // put, so a centred row sounds exactly as it does without one.
+        let pan = row.pan.clamp(-1.0, 1.0);
+        let (left_gain, right_gain) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
 
         // Every onset in the whole clip, in frames, with the note it plays.
         let mut starts: Vec<(usize, f32)> = Vec::new();
@@ -173,8 +187,8 @@ pub fn render(pattern: &Pattern) -> Result<DecodedAudio, String> {
                     level *= 1.0 - (i - cut_from) as f32 / fade.max(1) as f32;
                 }
                 let at = (start + i) % total;
-                left[at] += hit.left[i] * level;
-                right[at] += hit.right[i] * level;
+                left[at] += hit.left[i] * level * left_gain;
+                right[at] += hit.right[i] * level * right_gain;
             }
         }
     }
@@ -262,11 +276,55 @@ mod tests {
             sound: RowSound::Synth { voice },
             steps,
             gain: 1.0,
+            pan: 0.0,
             note: 45.0,
             step_notes: Vec::new(),
             choke: false,
             muted: false,
         }
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn balance_moves_a_row_between_the_channels() {
+        let render_at = |pan: f32| {
+            let mut snare = row(Voice::Snare, &[0]);
+            snare.gain = 0.5;
+            snare.pan = pan;
+            render(&pattern(vec![snare], 1)).unwrap()
+        };
+
+        let centre = render_at(0.0);
+        assert_eq!(centre.channels[0], centre.channels[1]);
+
+        let left = render_at(-1.0);
+        assert_eq!(left.channels[0], centre.channels[0], "the near side is untouched");
+        assert_eq!(peak(&left.channels[1]), 0.0);
+
+        let right = render_at(1.0);
+        assert_eq!(peak(&right.channels[0]), 0.0);
+        assert_eq!(right.channels[1], centre.channels[1]);
+
+        let leaning = render_at(0.5);
+        assert!((peak(&leaning.channels[0]) - peak(&centre.channels[0]) * 0.5).abs() < 1e-5);
+        assert_eq!(leaning.channels[1], centre.channels[1]);
+    }
+
+    #[test]
+    fn balance_applies_to_one_row_only() {
+        let mut hard_left = row(Voice::Snare, &[0]);
+        hard_left.gain = 0.5;
+        hard_left.pan = -1.0;
+        let mut centred = row(Voice::Kick, &[0]);
+        centred.gain = 0.5;
+
+        let both = render(&pattern(vec![hard_left, centred.clone()], 1)).unwrap();
+        let kick = render(&pattern(vec![centred], 1)).unwrap();
+        assert_eq!(both.channels[1], kick.channels[1], "only the kick reaches the right");
+        assert_ne!(both.channels[0], kick.channels[0]);
     }
 
     fn pattern(rows: Vec<PatternRow>, bars: u32) -> Pattern {
@@ -280,6 +338,12 @@ mod tests {
 
     fn first_onset(samples: &[f32]) -> usize {
         samples.iter().position(|s| s.abs() > 1e-3).unwrap()
+    }
+
+    #[test]
+    fn length_goes_up_to_200_bars() {
+        assert!(pattern(vec![row(Voice::Kick, &[0])], 200).validate().is_ok());
+        assert!(pattern(vec![row(Voice::Kick, &[0])], 201).validate().is_err());
     }
 
     #[test]

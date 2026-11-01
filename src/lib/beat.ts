@@ -217,6 +217,15 @@ export function defaultPattern(bpm: number): Pattern {
   };
 }
 
+export function newPatternId(): string {
+  return `pattern-${newRowId()}`;
+}
+
+/** Whether two patterns would render the same. */
+export function samePattern(a: Pattern, b: Pattern): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 // ---------- Remembered between launches ----------
 
 const MODE_KEY = "zwave.mode";

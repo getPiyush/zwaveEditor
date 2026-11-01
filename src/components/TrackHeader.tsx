@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { HTMLAttributes } from "react";
 
 import { channelLayoutName, formatSampleRate, formatTime } from "../lib/format";
 import type { Track } from "../types";
@@ -7,6 +8,7 @@ interface Props {
   track: Track;
   colors: { peak: string; rms: string };
   index: number;
+  dragHandle: HTMLAttributes<HTMLElement>;
   onChange: (changes: Partial<Track>) => void;
   onRemove: () => void;
   onUndo: () => void;
@@ -18,6 +20,7 @@ export function TrackHeader({
   track,
   colors,
   index,
+  dragHandle,
   onChange,
   onRemove,
   onUndo,
@@ -39,6 +42,15 @@ export function TrackHeader({
   return (
     <div className="track__header">
       <div className="track__title">
+        <button
+          type="button"
+          className="drag-handle"
+          title="Drag to rearrange, or use ↑/↓"
+          aria-label={`Move ${clip.name}`}
+          {...dragHandle}
+        >
+          ⠿
+        </button>
         <input
           type="checkbox"
           className="track__include"

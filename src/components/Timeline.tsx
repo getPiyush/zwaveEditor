@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import { barSeconds, beatSeconds, gridSeconds, snapTime } from "../lib/beat";
 import { formatTime } from "../lib/format";
+import { useReorder } from "../lib/useReorder";
 import {
   niceTickInterval,
   panView,
@@ -18,7 +19,7 @@ import { TrackHeader } from "./TrackHeader";
 import { TrackWaveform } from "./TrackWaveform";
 
 /** Width of the track-header column. Shared with the CSS through a variable. */
-const GUTTER = 208;
+const GUTTER = 228;
 const RULER_HEIGHT = 26;
 const TRACK_HEIGHT = 104;
 
@@ -31,6 +32,8 @@ interface Props {
   onSeek: (seconds: number) => void;
   onTrackChange: (clipId: number, changes: Partial<Track>) => void;
   onTrackRemove: (clipId: number) => void;
+  /** The track waiting on the delete confirmation, shown highlighted. */
+  removingClipId: number | null;
   onTrackUndo: (clipId: number) => void;
   onHoverTimeChange: (seconds: number | null) => void;
   selection: Selection | null;
@@ -44,6 +47,7 @@ interface Props {
   beat?: BeatSettings;
   /** Beat mode only: reopens a track made in the pattern editor. */
   onTrackEditPattern?: (clipId: number) => void;
+  onTrackReorder: (from: number, slot: number) => void;
 }
 
 /** Below this many pixels a drag is treated as a click, not a selection. */
@@ -58,6 +62,7 @@ export function Timeline({
   onSeek,
   onTrackChange,
   onTrackRemove,
+  removingClipId,
   onTrackUndo,
   onHoverTimeChange,
   selection,
@@ -67,8 +72,11 @@ export function Timeline({
   tuneDrop,
   beat,
   onTrackEditPattern,
+  onTrackReorder,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const tracksRef = useRef<HTMLDivElement>(null);
+  const reorder = useReorder(tracksRef, tracks.length, onTrackReorder);
   const rulerRef = useRef<HTMLCanvasElement>(null);
   const gridRef = useRef<HTMLCanvasElement>(null);
   const [rootWidth, setRootWidth] = useState(0);
@@ -302,13 +310,15 @@ export function Timeline({
         <canvas ref={rulerRef} className="timeline__ruler" style={{ height: RULER_HEIGHT }} />
       </div>
 
-      <div className="timeline__tracks">
+      <div className="timeline__tracks" ref={tracksRef}>
         {tracks.map((track, index) => {
           const colors = trackColors(index);
           return (
             <div
               key={track.clip.id}
-              className={`track${track.clip.id === activeClipId ? " track--active" : ""}`}
+              className={`track${track.clip.id === activeClipId ? " track--active" : ""}${
+                track.clip.id === removingClipId ? " track--removing" : ""
+              }${reorder.itemClass(index)}`}
               style={{ height: TRACK_HEIGHT }}
               data-clip-id={track.clip.id}
             >
@@ -316,11 +326,12 @@ export function Timeline({
                 track={track}
                 colors={colors}
                 index={index}
+                dragHandle={reorder.handleProps(index)}
                 onChange={(changes) => onTrackChange(track.clip.id, changes)}
                 onRemove={() => onTrackRemove(track.clip.id)}
                 onUndo={() => onTrackUndo(track.clip.id)}
                 onEditPattern={
-                  onTrackEditPattern && track.pattern
+                  onTrackEditPattern && track.patternId
                     ? () => onTrackEditPattern(track.clip.id)
                     : undefined
                 }

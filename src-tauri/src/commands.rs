@@ -10,9 +10,9 @@ use crate::audio::engine::{AudioEngine, Preview, Track};
 use crate::audio::export::BitDepth;
 use crate::audio::master::MasterBus;
 use crate::audio::pattern::{self, Pattern};
-use crate::audio::recording::Recorder;
+use crate::audio::recording::{self, Recorder};
 use crate::audio::{decode, edit, export, peaks, ClipEntry, ClipStore, Clipboard};
-use crate::workspace::{self, ProjectSummary, ProjectTrack, TuneInfo, Workspace};
+use crate::workspace::{self, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
 
 /// Everything the UI needs to describe an imported file.
 #[derive(Serialize)]
@@ -452,6 +452,37 @@ pub fn stop_recording(
     store.with(id, |entry| clip_info(id, entry))
 }
 
+/// A take saved as a file, ready for a pattern row to play.
+#[derive(Serialize)]
+pub struct RecordedSample {
+    pub path: String,
+    pub name: String,
+}
+
+/// Ends a take and keeps it in the workspace as a sound for pattern rows, with
+/// the silence around it trimmed.
+#[tauri::command(async)]
+pub fn stop_recording_as_sample(
+    recorder: State<Mutex<Recorder>>,
+    workspace: State<Workspace>,
+) -> Result<RecordedSample, String> {
+    let audio = recording::trim_silence(recorder.lock().unwrap().stop()?)?;
+    let path = workspace::save_sample(&workspace.samples_dir(), &audio)?;
+    Ok(RecordedSample {
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+/// Ends a take and throws it away.
+#[tauri::command]
+pub fn cancel_recording(recorder: State<Mutex<Recorder>>) {
+    recorder.lock().unwrap().cancel();
+}
+
 #[tauri::command]
 pub fn reverse_range(
     clip_id: u64,
@@ -769,6 +800,8 @@ pub struct ProjectTrackSetting {
     pub in_master: bool,
     #[serde(default)]
     pub offset_secs: f64,
+    #[serde(default)]
+    pub pattern_id: Option<String>,
 }
 
 /// One track of a project that was opened, shaped like the UI's own `Track`.
@@ -781,6 +814,15 @@ pub struct OpenedTrack {
     pub soloed: bool,
     pub in_master: bool,
     pub offset: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern_id: Option<String>,
+}
+
+/// A project that was opened: its tracks, and every pattern kept in it.
+#[derive(Serialize)]
+pub struct OpenedProject {
+    pub tracks: Vec<OpenedTrack>,
+    pub patterns: Vec<SavedPattern>,
 }
 
 /// Saves the session into the workspace as a project. Returns its folder.
@@ -788,6 +830,7 @@ pub struct OpenedTrack {
 pub fn save_project(
     name: String,
     tracks: Vec<ProjectTrackSetting>,
+    patterns: Vec<SavedPattern>,
     workspace: State<Workspace>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
@@ -805,12 +848,13 @@ pub fn save_project(
                 soloed: setting.soloed,
                 in_master: setting.in_master,
                 offset_secs: start_offset(setting.offset_secs),
+                pattern_id: setting.pattern_id,
             },
             audio,
         ));
     }
 
-    let dir = workspace::save_project(&workspace.projects_dir(), &name, resolved)?;
+    let dir = workspace::save_project(&workspace.projects_dir(), &name, resolved, patterns)?;
     Ok(dir.to_string_lossy().to_string())
 }
 
@@ -825,8 +869,9 @@ pub fn open_project(
     name: String,
     workspace: State<Workspace>,
     store: State<ClipStore>,
-) -> Result<Vec<OpenedTrack>, String> {
+) -> Result<OpenedProject, String> {
     let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let patterns = project.patterns;
 
     let mut decoded = Vec::with_capacity(project.tracks.len());
     for track in project.tracks {
@@ -836,7 +881,7 @@ pub fn open_project(
         decoded.push((track, audio, path, size));
     }
 
-    decoded
+    let tracks = decoded
         .into_iter()
         .map(|(track, audio, path, size)| {
             let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
@@ -847,9 +892,12 @@ pub fn open_project(
                 soloed: track.soloed,
                 in_master: track.in_master,
                 offset: start_offset(track.offset_secs),
+                pattern_id: track.pattern_id,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(OpenedProject { tracks, patterns })
 }
 
 /// Sets the master bus: gain on the summed mix, and whether to limit it.
@@ -858,8 +906,9 @@ pub fn set_master(master: MasterBus, engine: State<AudioEngine>) {
     engine.mixer.set_master(master);
 }
 
-/// Renders a step pattern into a new clip, ready to be added as a track.
-#[tauri::command]
+/// Renders a step pattern into a new clip, ready to be added as a track. Long
+/// patterns take seconds, so this stays off the UI thread.
+#[tauri::command(async)]
 pub fn render_pattern(
     pattern: Pattern,
     name: String,
@@ -876,7 +925,8 @@ pub fn render_pattern(
 /// it is edited. Calling it again swaps the loop without restarting it.
 #[tauri::command]
 pub fn preview_pattern(pattern: Pattern, engine: State<AudioEngine>) -> Result<(), String> {
-    let audio = pattern::render(&pattern)?;
+    let bars = pattern.bars.min(pattern::PREVIEW_BARS);
+    let audio = pattern::render(&Pattern { bars, ..pattern })?;
     engine.mixer.set_pattern_loop(Some(std::sync::Arc::new(audio)));
     Ok(())
 }

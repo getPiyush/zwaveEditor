@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use zwave_editor_lib::audio::decode::{self, DecodedAudio};
-use zwave_editor_lib::workspace::{self, ProjectTrack, Workspace};
+use zwave_editor_lib::workspace::{self, ProjectTrack, SavedPattern, Workspace};
 
 /// A fresh, empty directory for one test.
 fn test_dir(name: &str) -> PathBuf {
@@ -23,6 +23,15 @@ fn track(name: &str, offset_secs: f64) -> ProjectTrack {
         soloed: false,
         in_master: true,
         offset_secs,
+        pattern_id: None,
+    }
+}
+
+fn saved_pattern(id: &str) -> SavedPattern {
+    SavedPattern {
+        id: id.to_string(),
+        name: format!("Beat {id}"),
+        pattern: serde_json::json!({ "bpm": 90, "bars": 4, "swing": 0.2, "rows": [{ "id": "row-1" }] }),
     }
 }
 
@@ -95,6 +104,7 @@ fn a_project_round_trips_and_saving_again_replaces_it() {
         &projects,
         "  my: song ",
         vec![(track("drums.mp3", 0.0), ramp(4_410, 44_100)), (track("take 2", 1.5), ramp(480, 48_000))],
+        vec![],
     )
     .unwrap();
     assert_eq!(saved, projects.join("my- song"));
@@ -114,13 +124,75 @@ fn a_project_round_trips_and_saving_again_replaces_it() {
     assert_eq!(audio.sample_rate, 44_100);
     assert_eq!(audio.channels, original.channels, "float WAV keeps every sample");
 
-    workspace::save_project(&projects, "my- song", vec![(track("only", 0.0), ramp(480, 48_000))])
+    workspace::save_project(&projects, "my- song", vec![(track("only", 0.0), ramp(480, 48_000))], vec![])
         .unwrap();
     let (project, dir) = workspace::read_project(&projects, "my- song").unwrap();
     assert_eq!(project.tracks.len(), 1);
     assert!(!dir.join("audio/track-02.wav").exists(), "the old audio is gone");
     assert_eq!(workspace::list_projects(&projects).len(), 1, "no staging folder is left behind");
 
-    assert!(workspace::save_project(&projects, " .. ", vec![(track("x", 0.0), ramp(8, 8_000))]).is_err());
+    assert!(workspace::save_project(&projects, " .. ", vec![(track("x", 0.0), ramp(8, 8_000))], vec![]).is_err());
     assert!(workspace::read_project(&projects, "../my- song").is_err());
+}
+
+#[test]
+fn recorded_sounds_take_the_next_free_name_and_can_be_played_back() {
+    let samples = test_dir("samples").join("workspace").join("samples");
+    let audio = ramp(480, 48_000);
+
+    let first = workspace::save_sample(&samples, &audio).unwrap();
+    let second = workspace::save_sample(&samples, &audio).unwrap();
+    assert_eq!(first, samples.join("Recording 1.wav"));
+    assert_eq!(second, samples.join("Recording 2.wav"));
+
+    let decoded = decode::decode_file(&first).unwrap();
+    assert_eq!(decoded.channels, audio.channels);
+}
+
+#[test]
+fn a_project_keeps_every_pattern_even_one_no_track_uses() {
+    let projects = test_dir("project-patterns").join("projects");
+
+    let mut used = track("Beat 2 · 90 BPM", 0.0);
+    used.pattern_id = Some("2".to_string());
+    workspace::save_project(
+        &projects,
+        "beats",
+        vec![(used, ramp(480, 48_000)), (track("vocal", 0.0), ramp(480, 48_000))],
+        vec![saved_pattern("1"), saved_pattern("2")],
+    )
+    .unwrap();
+
+    let (project, _) = workspace::read_project(&projects, "beats").unwrap();
+    let ids: Vec<&str> = project.patterns.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["1", "2"]);
+    assert_eq!(project.patterns[0].pattern["rows"][0]["id"], "row-1");
+    assert_eq!(project.tracks[0].pattern_id.as_deref(), Some("2"));
+    assert_eq!(project.tracks[1].pattern_id, None);
+}
+
+#[test]
+fn a_project_of_only_patterns_can_be_saved_but_an_empty_one_cannot() {
+    let projects = test_dir("project-only-patterns").join("projects");
+
+    workspace::save_project(&projects, "ideas", vec![], vec![saved_pattern("1")]).unwrap();
+    let (project, _) = workspace::read_project(&projects, "ideas").unwrap();
+    assert!(project.tracks.is_empty());
+    assert_eq!(project.patterns.len(), 1);
+
+    assert!(workspace::save_project(&projects, "nothing", vec![], vec![]).is_err());
+}
+
+#[test]
+fn a_project_saved_before_patterns_existed_still_opens() {
+    let projects = test_dir("project-old-format").join("projects");
+    std::fs::create_dir_all(projects.join("old")).unwrap();
+    std::fs::write(
+        projects.join("old").join("project.json"),
+        r#"{ "version": 1, "savedAt": 1, "tracks": [] }"#,
+    )
+    .unwrap();
+
+    let (project, _) = workspace::read_project(&projects, "old").unwrap();
+    assert!(project.patterns.is_empty());
 }
