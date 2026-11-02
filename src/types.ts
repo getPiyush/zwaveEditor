@@ -33,9 +33,14 @@ export interface Track {
   inMaster: boolean;
   /** Where the track starts on the session timeline, in seconds. */
   offset: number;
+  /** The project pattern this track was rendered from, so it can be reopened. */
+  patternId?: string;
 }
 
 /** A range selected on one track, in seconds from the start of the clip. */
+/** What a track made from scratch starts out holding. */
+export type NewTrackSource = { kind: "blank"; seconds: number } | { kind: "clipboard" };
+
 export interface Selection {
   clipId: number;
   start: number;
@@ -97,4 +102,95 @@ export interface ProjectSummary {
   trackCount: number;
   /** Seconds since the Unix epoch. */
   savedAt: number;
+}
+
+/** Editor is the original app; Beat adds tempo, grid, master bus and patterns. */
+export type AppMode = "editor" | "beat";
+
+export type SnapDivision = "off" | "bar" | "beat" | "eighth" | "sixteenth";
+
+export interface BeatSettings {
+  bpm: number;
+  snap: SnapDivision;
+  masterGain: number;
+  limiter: boolean;
+}
+
+export interface MasterBus {
+  gain: number;
+  limiter: boolean;
+}
+
+export type SynthVoice =
+  | "kick"
+  | "bass808"
+  | "snare"
+  | "clap"
+  | "closedHat"
+  | "openHat"
+  | "chime"
+  | "rim"
+  | "tom"
+  | "shaker"
+  | "cowbell"
+  | "piano"
+  | "electricPiano"
+  | "guitar"
+  | "bass"
+  | "organ"
+  | "strings"
+  | "brass"
+  | "flute"
+  | "marimba"
+  | "synthLead";
+
+export type RowSound =
+  | { kind: "synth"; voice: SynthVoice }
+  | { kind: "sample"; path: string; name: string };
+
+export interface PatternRow {
+  id: string;
+  sound: RowSound;
+  /** One per sixteenth note. */
+  steps: boolean[];
+  gain: number;
+  /** Left/right balance: -1 is left only, 0 centred, 1 right only. Missing means centred. */
+  pan?: number;
+  /**
+   * A note per step, for melodies on tuned rows. A missing or null entry
+   * plays `note`.
+   */
+  stepNotes?: (number | null)[];
+  /** MIDI note: pitch for tuned voices (808, tom, instruments); for samples, 60 plays them as recorded. */
+  note: number;
+  /** Each hit cuts off the one before. */
+  choke: boolean;
+  muted: boolean;
+}
+
+export interface Pattern {
+  bpm: number;
+  bars: number;
+  /** 0 straight, 1 fully swung. */
+  swing: number;
+  rows: PatternRow[];
+}
+
+/** A take saved as a file in the workspace, for a pattern row to play. */
+export interface RecordedSample {
+  path: string;
+  name: string;
+}
+
+/** A pattern kept in the project, whether or not a track still uses it. */
+export interface SavedPattern {
+  id: string;
+  name: string;
+  pattern: Pattern;
+}
+
+/** What opening a project hands back, ready to replace the session. */
+export interface OpenedProject {
+  tracks: Track[];
+  patterns: SavedPattern[];
 }

@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  closeWindow,
   getWorkspace,
+  onWindowClose,
   repeatRange,
   setWorkspace,
+  stopRecording,
   transportPause,
   transportPlay,
   transportSeek,
@@ -13,7 +16,12 @@ import { isRunningInTauri } from "../lib/tauri";
 import { useTransport } from "../lib/useTransport";
 import { clampView, trackEnd, xToTime, zoomView } from "../lib/waveform";
 import type {
+  AppMode,
+  BeatSettings,
   ClipInfo,
+  NewTrackSource,
+  OpenedProject,
+  SavedPattern,
   Selection,
   Track,
   TuneDrop,
@@ -21,7 +29,10 @@ import type {
   ViewRange,
   WorkspaceInfo,
 } from "../types";
+import { AddTrackDialog } from "./AddTrackDialog";
+import { BeatBar } from "./BeatBar";
 import { ExportDialog } from "./ExportDialog";
+import { ModeSwitch } from "./ModeSwitch";
 import { AdjustWaveDialog } from "./AdjustWaveDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptySession } from "./EmptySession";
@@ -35,47 +46,95 @@ import { TunesPanel } from "./TunesPanel";
 
 interface Props {
   tracks: Track[];
+  patterns: SavedPattern[];
+  /** The pattern editor is open, holding a grid that isn't in the session yet. */
+  patternDraftOpen: boolean;
   onAddFiles: () => void;
   onOpenPaths: (paths: string[]) => void;
   onInsertFile: (clipId: number, path: string, atEnd: boolean) => Promise<boolean>;
-  onProjectOpened: (tracks: Track[]) => void;
+  onProjectOpened: (project: OpenedProject) => void;
   onTrackChange: (clipId: number, changes: Partial<Track>) => void;
   onTrackRemove: (clipId: number) => void;
+  onTrackReorder: (from: number, slot: number) => void;
   onCloseAll: () => void;
   onEditSelection: (kind: "delete" | "crop", selection: Selection) => Promise<boolean>;
   onCopySelection: (selection: Selection) => Promise<number | null>;
-  onPaste: (target: Selection) => Promise<boolean>;
+  onPaste: (target: Selection, silence: number) => Promise<boolean>;
   onUndoTrack: (clipId: number) => Promise<boolean>;
   onRecordingComplete: (clip: ClipInfo) => void;
+  /** Adds a track starting at `offset`. Returns its clip id, or null if it failed. */
+  onNewTrack: (source: NewTrackSource, offset: number) => Promise<number | null>;
   isDragging: boolean;
   isImporting: boolean;
   importingName: string | null;
   error: string | null;
+  mode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+  /** Present in beat mode only. Everything beat-specific keys off it. */
+  beat?: BeatSettings;
+  onBeatChange: (changes: Partial<BeatSettings>) => void;
+  onNewPattern: () => void;
+  onEditPattern: (clipId: number) => void;
+  onOpenPattern: (id: string) => void;
 }
 
-/** Where on a track, in clip time, a paste at the playhead lands. */
-function pastePoint(track: Track, playhead: number): number {
-  return Math.min(Math.max(playhead - track.offset, 0), track.clip.durationSecs);
+/**
+ * Where on a track, in clip time, a paste at the playhead lands. With blank
+ * filler on it may lie past the clip's end; the gap is then filled with silence.
+ */
+function pastePoint(track: Track, playhead: number, filler: boolean): number {
+  const at = Math.max(playhead - track.offset, 0);
+  return filler ? at : Math.min(at, track.clip.durationSecs);
 }
+
+/** Everything a saved project records, to tell whether the session has moved on from it. */
+function sessionSnapshot(tracks: Track[], patterns: SavedPattern[]): string {
+  return JSON.stringify([
+    tracks.map((track) => [
+      track.clip.id,
+      track.clip.version,
+      track.gain,
+      track.muted,
+      track.soloed,
+      track.inMaster,
+      track.offset,
+      track.patternId,
+    ]),
+    patterns,
+  ]);
+}
+
+const EMPTY_SESSION = sessionSnapshot([], []);
 
 export function SessionScreen({
   tracks,
+  patterns,
+  patternDraftOpen,
   onAddFiles,
   onOpenPaths,
   onInsertFile,
   onProjectOpened,
   onTrackChange,
   onTrackRemove,
+  onTrackReorder,
   onCloseAll,
   onEditSelection,
   onCopySelection,
   onPaste,
   onUndoTrack,
   onRecordingComplete,
+  onNewTrack,
   isDragging,
   isImporting,
   importingName,
   error,
+  mode,
+  onModeChange,
+  beat,
+  onBeatChange,
+  onNewPattern,
+  onEditPattern,
+  onOpenPattern,
 }: Props) {
   const { state, position, anticipate } = useTransport();
   const [view, setView] = useState<ViewRange>({ start: 0, end: 1 });
@@ -87,15 +146,44 @@ export function SessionScreen({
   const [activeClipId, setActiveClipId] = useState<number | null>(null);
   // Length of what is on the clipboard, in seconds, or null if nothing is.
   const [clipboard, setClipboard] = useState<number | null>(null);
+  // Blank filler: lets a paste land past a track's end, padding the gap with
+  // silence, plus an optional extra gap of silence ahead of every paste.
+  const [filler, setFiller] = useState(false);
+  const [fillerGapDraft, setFillerGapDraft] = useState("0");
+  const fillerGap = filler ? Math.max(Number(fillerGapDraft) || 0, 0) : 0;
   const [showExport, setShowExport] = useState(false);
   const [showRecording, setShowRecording] = useState(false);
   const [showRepeat, setShowRepeat] = useState(false);
+  const [showAddTrack, setShowAddTrack] = useState(false);
   const [showAdjustWave, setShowAdjustWave] = useState(false);
   const [showConfirmCloseAll, setShowConfirmCloseAll] = useState(false);
+  // The track waiting on the delete confirmation.
+  const [removingClipId, setRemovingClipId] = useState<number | null>(null);
+  const removingTrack = tracks.find((track) => track.clip.id === removingClipId);
   const [showTunes, setShowTunes] = useState(false);
   const [projectDialog, setProjectDialog] = useState<"save" | "open" | null>(null);
   // The project this session was last saved as or opened from.
   const [projectName, setProjectName] = useState<string | null>(null);
+
+  // What was last saved or opened, against which the session counts as unsaved.
+  const [savedSnapshot, setSavedSnapshot] = useState(EMPTY_SESSION);
+  const snapshot = useMemo(() => sessionSnapshot(tracks, patterns), [tracks, patterns]);
+  const hasUnsavedWork = snapshot !== EMPTY_SESSION && snapshot !== savedSnapshot;
+  const [showClosePrompt, setShowClosePrompt] = useState(false);
+  // The save dialog was opened by the close prompt, so a save also closes the app.
+  const [closeAfterSave, setCloseAfterSave] = useState(false);
+
+  const mustAskBeforeClosing = useRef(false);
+  mustAskBeforeClosing.current = hasUnsavedWork || patternDraftOpen;
+  useEffect(
+    () =>
+      onWindowClose(() => {
+        if (!mustAskBeforeClosing.current) return true;
+        setShowClosePrompt(true);
+        return false;
+      }),
+    [],
+  );
   const [workspace, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   // Where the tune being dragged out of the panel would land right now.
   const [tuneDrop, setTuneDrop] = useState<TuneDrop | null>(null);
@@ -222,9 +310,13 @@ export function SessionScreen({
       void transportPause();
       return;
     }
-    // Playing with a range selected starts from the top of that range.
-    if (selection && selectedTrack) seek(selectedTrack.offset + selection.start);
     setFollowPlayhead(true);
+    // Playing with a range selected plays just that range, from its top.
+    if (selection && selectedTrack && selection.end > selection.start) {
+      seek(selectedTrack.offset + selection.start);
+      void transportPlay(selectedTrack.offset + selection.end);
+      return;
+    }
     void transportPlay();
   }, [state.playing, selection, selectedTrack, seek]);
 
@@ -265,27 +357,30 @@ export function SessionScreen({
     if (clipboard === null) return;
     let target: Selection;
     let offset: number;
+    let silence = fillerGap;
     if (selection && selectedTrack) {
       target = selection;
       offset = selectedTrack.offset;
     } else if (activeTrack) {
-      const at = pastePoint(activeTrack, positionRef.current);
+      const aimed = pastePoint(activeTrack, positionRef.current, filler);
+      const at = Math.min(aimed, activeTrack.clip.durationSecs);
       target = { clipId: activeTrack.clip.id, start: at, end: at };
       offset = activeTrack.offset;
+      silence += aimed - at;
     } else {
       return;
     }
 
-    if (await onPaste(target)) {
+    if (await onPaste(target, silence)) {
       setLastEdited(target.clipId);
       setActiveClipId(target.clipId);
       setSelection(null);
       // Not `seek`: the session may have just grown past the duration it clamps to.
-      const after = offset + target.start + clipboard;
+      const after = offset + target.start + silence + clipboard;
       anticipate(after);
       void transportSeek(after);
     }
-  }, [clipboard, selection, selectedTrack, activeTrack, onPaste, anticipate]);
+  }, [clipboard, selection, selectedTrack, activeTrack, onPaste, anticipate, filler, fillerGap]);
 
   const undo = useCallback(
     async (clipId: number) => {
@@ -300,6 +395,18 @@ export function SessionScreen({
       setSelection(null);
     },
     [onRecordingComplete],
+  );
+
+  // A new track becomes the active one, so a paste at the playhead lands on it.
+  const addTrack = useCallback(
+    async (source: NewTrackSource) => {
+      const offset = source.kind === "clipboard" ? positionRef.current : 0;
+      const clipId = await onNewTrack(source, offset);
+      if (clipId === null) return;
+      setActiveClipId(clipId);
+      setSelection(null);
+    },
+    [onNewTrack],
   );
 
   const handleRepeat = useCallback(
@@ -326,6 +433,15 @@ export function SessionScreen({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // While a question is open, nothing else should touch the session.
+      if (showClosePrompt) {
+        if (event.key === "Escape") setShowClosePrompt(false);
+        return;
+      }
+      if (removingClipId !== null) {
+        if (event.key === "Escape") setRemovingClipId(null);
+        return;
+      }
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) {
         return;
       }
@@ -402,9 +518,44 @@ export function SessionScreen({
     activeTrack,
     state.playing,
     state.ready,
+    removingClipId,
+    showClosePrompt,
   ]);
 
   const inMasterCount = tracks.filter((track) => track.inMaster).length;
+
+  // Silence a paste at the playhead would lay down ahead of the clipboard.
+  const pasteSilence = activeTrack
+    ? fillerGap +
+      Math.max(pastePoint(activeTrack, position, filler) - activeTrack.clip.durationSecs, 0)
+    : 0;
+
+  const fillerControls = (
+    <span className="editbar__filler">
+      <label title="Paste past a track's end, filling the gap with silence">
+        <input
+          type="checkbox"
+          checked={filler}
+          onChange={(event) => setFiller(event.target.checked)}
+        />
+        Blank filler
+      </label>
+      {filler && (
+        <label title="Extra silence to put just before the pasted audio">
+          +
+          <input
+            type="number"
+            min={0}
+            step={0.1}
+            value={fillerGapDraft}
+            onChange={(event) => setFillerGapDraft(event.target.value)}
+            aria-label="Silence before paste, in seconds"
+          />
+          s
+        </label>
+      )}
+    </span>
+  );
 
   return (
     <div className="session">
@@ -421,6 +572,7 @@ export function SessionScreen({
           </p>
         </div>
         <div className="session__actions">
+          <ModeSwitch mode={mode} onChange={onModeChange} />
           <button
             type="button"
             className={`session__tunes${showTunes ? " session__tunes--on" : ""}`}
@@ -431,8 +583,8 @@ export function SessionScreen({
           >
             <TunesIcon />
           </button>
-          <button type="button" onClick={onAddFiles} disabled={isImporting}>
-            {isImporting ? "Importing…" : "Add files…"}
+          <button type="button" onClick={() => setShowAddTrack(true)} disabled={isImporting}>
+            {isImporting ? "Importing…" : "Add track…"}
           </button>
           <button type="button" onClick={() => setProjectDialog("open")}>
             Open project…
@@ -440,7 +592,7 @@ export function SessionScreen({
           <button
             type="button"
             onClick={() => setProjectDialog("save")}
-            disabled={tracks.length === 0}
+            disabled={tracks.length === 0 && patterns.length === 0}
           >
             Save project…
           </button>
@@ -450,7 +602,7 @@ export function SessionScreen({
           <button
             type="button"
             onClick={() => setShowConfirmCloseAll(true)}
-            disabled={tracks.length === 0}
+            disabled={tracks.length === 0 && patterns.length === 0}
           >
             Close all
           </button>
@@ -471,6 +623,17 @@ export function SessionScreen({
         onFit={fitAll}
       />
 
+      {beat && (
+        <BeatBar
+          settings={beat}
+          position={position}
+          patterns={patterns}
+          onChange={onBeatChange}
+          onNewPattern={onNewPattern}
+          onOpenPattern={onOpenPattern}
+        />
+      )}
+
       {selection && selectedTrack && (
         <div className="editbar">
           <span className="editbar__range">
@@ -487,6 +650,7 @@ export function SessionScreen({
             <button type="button" onClick={() => void copy(true)}>
               Cut
             </button>
+            {clipboard !== null && fillerControls}
             <button type="button" onClick={() => void paste()} disabled={clipboard === null}>
               Paste
             </button>
@@ -513,9 +677,13 @@ export function SessionScreen({
         <div className="editbar">
           <span className="editbar__range">
             <strong>{activeTrack.clip.name}</strong> clipboard {formatTime(clipboard)} → at{" "}
-            {formatTime(pastePoint(activeTrack, position))}
+            {formatTime(pastePoint(activeTrack, position, filler))}
+            {pasteSilence > 0 && (
+              <span className="editbar__length">(after {formatTime(pasteSilence)} of silence)</span>
+            )}
           </span>
           <div className="editbar__actions">
+            {fillerControls}
             <button type="button" onClick={() => void paste()}>
               Paste at playhead
             </button>
@@ -531,6 +699,7 @@ export function SessionScreen({
           isDragging={isDragging}
           isImporting={isImporting}
           importingName={importingName}
+          onNewPattern={beat ? onNewPattern : undefined}
         />
       ) : (
         <>
@@ -546,7 +715,8 @@ export function SessionScreen({
               onViewChange={changeView}
               onSeek={seek}
               onTrackChange={onTrackChange}
-              onTrackRemove={onTrackRemove}
+              onTrackRemove={setRemovingClipId}
+              removingClipId={removingClipId}
               onTrackUndo={(clipId) => void undo(clipId)}
               onHoverTimeChange={setHoverTime}
               selection={selection}
@@ -554,6 +724,9 @@ export function SessionScreen({
               activeClipId={activeClipId}
               onActiveTrackChange={setActiveClipId}
               tuneDrop={tuneDrop}
+              beat={beat}
+              onTrackEditPattern={beat ? onEditPattern : undefined}
+              onTrackReorder={onTrackReorder}
             />
           </div>
 
@@ -599,26 +772,55 @@ export function SessionScreen({
         <ProjectDialog
           mode={projectDialog}
           tracks={tracks}
+          patterns={patterns}
           currentName={projectName}
           workspace={workspace}
           onWorkspaceChange={changeWorkspace}
-          onSaved={setProjectName}
+          onSaved={(name) => {
+            setProjectName(name);
+            setSavedSnapshot(snapshot);
+            if (closeAfterSave) void closeWindow();
+          }}
           onOpened={(name, opened) => {
             onProjectOpened(opened);
             setProjectName(name);
+            setSavedSnapshot(sessionSnapshot(opened.tracks, opened.patterns));
             setSelection(null);
             setLastEdited(null);
           }}
-          onClose={() => setProjectDialog(null)}
+          onClose={() => {
+            setProjectDialog(null);
+            setCloseAfterSave(false);
+          }}
         />
       )}
 
-      {showExport && <ExportDialog tracks={tracks} onClose={() => setShowExport(false)} />}
+      {showExport && (
+        <ExportDialog
+          tracks={tracks}
+          master={beat ? { gain: beat.masterGain, limiter: beat.limiter } : undefined}
+          onClose={() => setShowExport(false)}
+        />
+      )}
 
       {showRecording && (
         <RecordingDialog
           onClose={() => setShowRecording(false)}
-          onRecordingComplete={handleRecordingComplete}
+          onStop={async () => handleRecordingComplete(await stopRecording())}
+        />
+      )}
+
+      {showAddTrack && (
+        <AddTrackDialog
+          clipboard={clipboard}
+          playhead={position}
+          defaultSeconds={duration > 0 ? duration : 10}
+          isImporting={isImporting}
+          onBlank={(seconds) => addTrack({ kind: "blank", seconds })}
+          onClipboard={() => addTrack({ kind: "clipboard" })}
+          onFile={onAddFiles}
+          onTune={(tune) => onOpenPaths([tune.path])}
+          onClose={() => setShowAddTrack(false)}
         />
       )}
 
@@ -640,10 +842,64 @@ export function SessionScreen({
         />
       )}
 
+      {showClosePrompt && (
+        <ConfirmDialog
+          title={hasUnsavedWork ? "Save before closing?" : "Close zwaveEditor?"}
+          message={[
+            hasUnsavedWork &&
+              `${projectName ? `Your changes to "${projectName}"` : "This session"} ${
+                projectName ? "aren't" : "isn't"
+              } saved, and will be lost if you close without saving.`,
+            patternDraftOpen &&
+              "The pattern open in the editor hasn't been added to the session, so it won't be kept.",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          confirmText={hasUnsavedWork ? "Save…" : "Close anyway"}
+          cancelText="Keep editing"
+          isDangerous={!hasUnsavedWork}
+          onTop={true}
+          secondaryText={hasUnsavedWork ? "Don't save" : undefined}
+          onSecondary={() => void closeWindow()}
+          onConfirm={() => {
+            setShowClosePrompt(false);
+            if (hasUnsavedWork) {
+              setCloseAfterSave(true);
+              setProjectDialog("save");
+            } else {
+              void closeWindow();
+            }
+          }}
+          onCancel={() => setShowClosePrompt(false)}
+        />
+      )}
+
+      {removingTrack && (
+        <ConfirmDialog
+          title="Delete this track?"
+          message={`"${removingTrack.clip.name}" and any edits made to it will be removed from the session. This cannot be undone.${
+            removingTrack.patternId ? " Its pattern stays in the Patterns menu." : ""
+          }`}
+          confirmText="Delete track"
+          cancelText="Keep track"
+          isDangerous={true}
+          clearBackdrop={true}
+          onConfirm={() => {
+            setRemovingClipId(null);
+            onTrackRemove(removingTrack.clip.id);
+          }}
+          onCancel={() => setRemovingClipId(null)}
+        />
+      )}
+
       {showConfirmCloseAll && (
         <ConfirmDialog
           title="Close all tracks?"
-          message={`You have ${tracks.length} track${tracks.length !== 1 ? "s" : ""} open. This will close all of them. This action cannot be undone.`}
+          message={`You have ${tracks.length} track${tracks.length !== 1 ? "s" : ""} open. This will close all of them${
+            patterns.length > 0
+              ? ` and clear the ${patterns.length} pattern${patterns.length !== 1 ? "s" : ""} in this project, unless saved`
+              : ""
+          }. This action cannot be undone.`}
           confirmText="Close all"
           cancelText="Keep open"
           isDangerous={true}

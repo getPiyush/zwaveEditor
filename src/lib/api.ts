@@ -1,13 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   BitDepth,
   ClipInfo,
   InputDeviceInfo,
+  MasterBus,
+  Pattern,
   PeakData,
   PreviewState,
+  OpenedProject,
   ProjectSummary,
+  RecordedSample,
+  SavedPattern,
   Track,
   TransportState,
   TuneInfo,
@@ -111,9 +117,32 @@ export function copyRange(clipId: number, start: number, end: number): Promise<n
   return invoke<number>("copy_range", { clipId, startSecs: start, endSecs: end });
 }
 
-/** Replaces a range with the clipboard; pass `start === end` to insert. */
-export function pasteRange(clipId: number, start: number, end: number): Promise<ClipInfo> {
-  return invoke<ClipInfo>("paste_range", { clipId, startSecs: start, endSecs: end });
+/**
+ * Replaces a range with the clipboard; pass `start === end` to insert.
+ * `silence` seconds of blank filler go in just before the pasted audio.
+ */
+export function pasteRange(
+  clipId: number,
+  start: number,
+  end: number,
+  silence = 0,
+): Promise<ClipInfo> {
+  return invoke<ClipInfo>("paste_range", {
+    clipId,
+    startSecs: start,
+    endSecs: end,
+    silenceSecs: silence,
+  });
+}
+
+/** Opens a new clip of `seconds` of silence, for a blank track. */
+export function newBlankClip(seconds: number, name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("new_blank_clip", { seconds, name });
+}
+
+/** Opens what is on the clipboard as a new clip of its own. */
+export function newClipFromClipboard(name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("new_clip_from_clipboard", { name });
 }
 
 export function undoEdit(clipId: number): Promise<ClipInfo> {
@@ -149,12 +178,19 @@ export function exportMaster(
   tracks: Track[],
   path: string,
   bitDepth: BitDepth,
+  master?: MasterBus,
 ): Promise<string> {
-  return invoke<string>("export_master", { tracks: mixSettings(tracks), path, bitDepth });
+  return invoke<string>("export_master", {
+    tracks: mixSettings(tracks),
+    path,
+    bitDepth,
+    master: master ?? null,
+  });
 }
 
-export function transportPlay(): Promise<void> {
-  return invoke("transport_play");
+/** Plays from the playhead; with `until`, stops there, as when playing a selection. */
+export function transportPlay(until?: number): Promise<void> {
+  return invoke("transport_play", { until: until ?? null });
 }
 
 export function transportPause(): Promise<void> {
@@ -179,6 +215,16 @@ export function startRecording(): Promise<void> {
 
 export function stopRecording(): Promise<ClipInfo> {
   return invoke<ClipInfo>("stop_recording");
+}
+
+/** Ends a take and keeps it in the workspace as a sound for pattern rows. */
+export function stopRecordingAsSample(): Promise<RecordedSample> {
+  return invoke<RecordedSample>("stop_recording_as_sample");
+}
+
+/** Ends a take and throws it away. */
+export function cancelRecording(): Promise<void> {
+  return invoke("cancel_recording");
 }
 
 export function repeatRange(
@@ -311,7 +357,11 @@ export function previewState(): Promise<PreviewState> {
 }
 
 /** Saves the session into the workspace. Returns the project's folder. */
-export function saveProject(name: string, tracks: Track[]): Promise<string> {
+export function saveProject(
+  name: string,
+  tracks: Track[],
+  patterns: SavedPattern[],
+): Promise<string> {
   return invoke<string>("save_project", {
     name,
     tracks: tracks.map((track) => ({
@@ -321,7 +371,9 @@ export function saveProject(name: string, tracks: Track[]): Promise<string> {
       soloed: track.soloed,
       inMaster: track.inMaster,
       offsetSecs: track.offset,
+      patternId: track.patternId,
     })),
+    patterns,
   });
 }
 
@@ -329,7 +381,56 @@ export function listProjects(): Promise<ProjectSummary[]> {
   return invoke<ProjectSummary[]>("list_projects");
 }
 
-/** Loads a project's tracks as new clips, ready to replace the session. */
-export function openProject(name: string): Promise<Track[]> {
-  return invoke<Track[]>("open_project", { name });
+/** Loads a project's tracks as new clips, and its patterns, ready to replace the session. */
+export function openProject(name: string): Promise<OpenedProject> {
+  return invoke<OpenedProject>("open_project", { name });
+}
+
+/**
+ * Asks whether the window may close, on every attempt: true lets it, false keeps
+ * it open. Returns a function that stops listening.
+ */
+export function onWindowClose(mayClose: () => boolean): () => void {
+  let stopped = false;
+  let unlisten: (() => void) | undefined;
+  getCurrentWindow()
+    .onCloseRequested((event) => {
+      if (!mayClose()) event.preventDefault();
+    })
+    .then((fn) => {
+      if (stopped) fn();
+      else unlisten = fn;
+    })
+    .catch(() => {
+      /* Not running inside Tauri. */
+    });
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}
+
+/** Closes the window for good, without asking `onWindowClose` again. */
+export function closeWindow(): Promise<void> {
+  return getCurrentWindow().destroy();
+}
+
+/** Gain and limiter on the summed mix. Unity gain with no limiter is the original sound. */
+export function setMaster(master: MasterBus): Promise<void> {
+  return invoke("set_master", { master });
+}
+
+/** Renders a step pattern into a new clip on the Rust side. */
+export function renderPattern(pattern: Pattern, name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("render_pattern", { pattern, name });
+}
+
+/** Loops a pattern on its own, outside the timeline. Call again to update it in place. */
+export function previewPattern(pattern: Pattern): Promise<void> {
+  return invoke("preview_pattern", { pattern });
+}
+
+/** Silences the pattern loop started by `previewPattern`. */
+export function stopPatternPreview(): Promise<void> {
+  return invoke("stop_pattern_preview");
 }

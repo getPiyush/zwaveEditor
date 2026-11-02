@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::decode::DecodedAudio;
 use super::engine::sample_at;
+use super::master::{Limiter, MasterBus};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +75,16 @@ pub type MasterSource = (Arc<DecodedAudio>, f32, f64);
 /// Sums tracks into one stereo buffer at `sample_rate`, exactly as the mixer
 /// would play them: each starting at its offset, resampled to the target rate.
 pub fn render_master(tracks: &[MasterSource], sample_rate: u32) -> Vec<Vec<f32>> {
+    render_master_with(tracks, sample_rate, MasterBus::default())
+}
+
+/// `render_master` through the master bus, the same one playback uses.
+pub fn render_master_with(
+    tracks: &[MasterSource],
+    sample_rate: u32,
+    master: MasterBus,
+) -> Vec<Vec<f32>> {
+    let master = master.sanitized();
     let duration = tracks
         .iter()
         .map(|(audio, _, offset)| offset + audio.duration_secs())
@@ -100,8 +111,11 @@ pub fn render_master(tracks: &[MasterSource], sample_rate: u32) -> Vec<Vec<f32>>
         }
     }
 
-    for sample in left.iter_mut().chain(right.iter_mut()) {
-        *sample = sample.clamp(-1.0, 1.0);
+    let mut limiter = Limiter::new(sample_rate as f64);
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let (bl, br) = master.apply(*l, *r, &mut limiter);
+        *l = bl.clamp(-1.0, 1.0);
+        *r = br.clamp(-1.0, 1.0);
     }
 
     vec![left, right]
@@ -151,6 +165,26 @@ mod tests {
 
         let quiet = render_master(&[(constant(1.0, 0.1, 48_000), 0.25, 0.0)], 48_000);
         assert!((quiet[0][10] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn master_export_honours_the_bus() {
+        let loud = [(constant(0.9, 0.1, 48_000), 1.0, 0.0), (constant(0.9, 0.1, 48_000), 1.0, 0.0)];
+        let limited = render_master_with(
+            &loud,
+            48_000,
+            MasterBus { gain: 1.0, limiter: true },
+        );
+        assert!(limited[0]
+            .iter()
+            .all(|s| s.abs() <= super::super::master::LIMIT_THRESHOLD + 1e-6));
+
+        let halved = render_master_with(
+            &[(constant(0.5, 0.1, 48_000), 1.0, 0.0)],
+            48_000,
+            MasterBus { gain: 0.5, limiter: false },
+        );
+        assert!((halved[0][10] - 0.25).abs() < 1e-6);
     }
 
     #[test]

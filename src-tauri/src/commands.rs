@@ -8,9 +8,11 @@ use tauri::State;
 
 use crate::audio::engine::{AudioEngine, Preview, Track};
 use crate::audio::export::BitDepth;
-use crate::audio::recording::Recorder;
+use crate::audio::master::MasterBus;
+use crate::audio::pattern::{self, Pattern};
+use crate::audio::recording::{self, Recorder};
 use crate::audio::{decode, edit, export, peaks, ClipEntry, ClipStore, Clipboard};
-use crate::workspace::{self, ProjectSummary, ProjectTrack, TuneInfo, Workspace};
+use crate::workspace::{self, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
 
 /// Everything the UI needs to describe an imported file.
 #[derive(Serialize)]
@@ -206,11 +208,13 @@ pub fn copy_range(
 }
 
 /// Replaces the span with the clipboard; an empty span inserts at that point.
+/// `silence_secs` of blank filler go in ahead of the pasted audio.
 #[tauri::command]
 pub fn paste_range(
     clip_id: u64,
     start_secs: f64,
     end_secs: f64,
+    silence_secs: f64,
     store: State<ClipStore>,
     clipboard: State<Clipboard>,
 ) -> Result<ClipInfo, String> {
@@ -224,10 +228,63 @@ pub fn paste_range(
         clip_id,
         |audio| {
             let (start, end) = edit::frame_range(audio, start_secs, end_secs);
-            edit::paste_range(audio, start, end, &copied)
+            let silence = (silence_secs.max(0.0) * audio.sample_rate as f64).round() as usize;
+            edit::paste_after_silence(audio, start, end, silence, &copied)
         },
         |entry| clip_info(clip_id, entry),
     )
+}
+
+/// Rate and channel count for a blank track when nothing else suggests one.
+const BLANK_SAMPLE_RATE: u32 = 48_000;
+const BLANK_CHANNELS: usize = 2;
+
+/// Opens a new clip of `seconds` of silence. It takes the clipboard's format
+/// when there is one, so pasting into it needs no conversion.
+#[tauri::command]
+pub fn new_blank_clip(
+    seconds: f64,
+    name: String,
+    store: State<ClipStore>,
+    clipboard: State<Clipboard>,
+) -> Result<ClipInfo, String> {
+    if !(seconds > 0.0) {
+        return Err("a blank track needs a length".to_string());
+    }
+    let (sample_rate, channels) = clipboard
+        .0
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or((BLANK_SAMPLE_RATE, BLANK_CHANNELS), |copied| {
+            (copied.sample_rate, copied.channel_count())
+        });
+    let frames = (seconds * sample_rate as f64).round() as usize;
+    let audio = edit::silence(frames.max(1), sample_rate, channels);
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Blank".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("blank://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
+}
+
+/// Opens what is on the clipboard as a new clip of its own.
+#[tauri::command]
+pub fn new_clip_from_clipboard(
+    name: String,
+    store: State<ClipStore>,
+    clipboard: State<Clipboard>,
+) -> Result<ClipInfo, String> {
+    let copied = clipboard
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "nothing has been copied yet".to_string())?;
+    let audio = edit::copy_range(&copied, 0, copied.frame_count())?;
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Copied".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("clipboard://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
 }
 
 #[tauri::command]
@@ -273,6 +330,7 @@ pub fn export_master(
     tracks: Vec<TrackSetting>,
     path: String,
     bit_depth: BitDepth,
+    master: Option<MasterBus>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
     let mut sources = Vec::new();
@@ -294,7 +352,7 @@ pub fn export_master(
         return Err("no tracks are selected for the master".to_string());
     }
 
-    let rendered = export::render_master(&sources, sample_rate);
+    let rendered = export::render_master_with(&sources, sample_rate, master.unwrap_or_default());
     let path_buf = PathBuf::from(&path);
     export::write_wav(&path_buf, &rendered, sample_rate, bit_depth)?;
     Ok(path)
@@ -324,11 +382,15 @@ pub fn set_mix(
     Ok(())
 }
 
+/// Plays from the playhead; with `until`, stops there, as when playing a selection.
 #[tauri::command]
-pub fn transport_play(engine: State<AudioEngine>) {
+pub fn transport_play(until: Option<f64>, engine: State<AudioEngine>) {
     // The session and a tune preview would only talk over each other.
     engine.mixer.pause_preview();
-    engine.mixer.play();
+    match until {
+        Some(until) => engine.mixer.play_until(until),
+        None => engine.mixer.play(),
+    }
 }
 
 #[tauri::command]
@@ -388,6 +450,37 @@ pub fn stop_recording(
     let size = audio.channels.iter().map(|ch| ch.len()).sum::<usize>() as u64 * 4; // f32 = 4 bytes
     let id = store.insert(audio, name.clone(), format!("recording://{}", name), size);
     store.with(id, |entry| clip_info(id, entry))
+}
+
+/// A take saved as a file, ready for a pattern row to play.
+#[derive(Serialize)]
+pub struct RecordedSample {
+    pub path: String,
+    pub name: String,
+}
+
+/// Ends a take and keeps it in the workspace as a sound for pattern rows, with
+/// the silence around it trimmed.
+#[tauri::command(async)]
+pub fn stop_recording_as_sample(
+    recorder: State<Mutex<Recorder>>,
+    workspace: State<Workspace>,
+) -> Result<RecordedSample, String> {
+    let audio = recording::trim_silence(recorder.lock().unwrap().stop()?)?;
+    let path = workspace::save_sample(&workspace.samples_dir(), &audio)?;
+    Ok(RecordedSample {
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+/// Ends a take and throws it away.
+#[tauri::command]
+pub fn cancel_recording(recorder: State<Mutex<Recorder>>) {
+    recorder.lock().unwrap().cancel();
 }
 
 #[tauri::command]
@@ -707,6 +800,8 @@ pub struct ProjectTrackSetting {
     pub in_master: bool,
     #[serde(default)]
     pub offset_secs: f64,
+    #[serde(default)]
+    pub pattern_id: Option<String>,
 }
 
 /// One track of a project that was opened, shaped like the UI's own `Track`.
@@ -719,6 +814,15 @@ pub struct OpenedTrack {
     pub soloed: bool,
     pub in_master: bool,
     pub offset: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern_id: Option<String>,
+}
+
+/// A project that was opened: its tracks, and every pattern kept in it.
+#[derive(Serialize)]
+pub struct OpenedProject {
+    pub tracks: Vec<OpenedTrack>,
+    pub patterns: Vec<SavedPattern>,
 }
 
 /// Saves the session into the workspace as a project. Returns its folder.
@@ -726,6 +830,7 @@ pub struct OpenedTrack {
 pub fn save_project(
     name: String,
     tracks: Vec<ProjectTrackSetting>,
+    patterns: Vec<SavedPattern>,
     workspace: State<Workspace>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
@@ -743,12 +848,13 @@ pub fn save_project(
                 soloed: setting.soloed,
                 in_master: setting.in_master,
                 offset_secs: start_offset(setting.offset_secs),
+                pattern_id: setting.pattern_id,
             },
             audio,
         ));
     }
 
-    let dir = workspace::save_project(&workspace.projects_dir(), &name, resolved)?;
+    let dir = workspace::save_project(&workspace.projects_dir(), &name, resolved, patterns)?;
     Ok(dir.to_string_lossy().to_string())
 }
 
@@ -763,8 +869,9 @@ pub fn open_project(
     name: String,
     workspace: State<Workspace>,
     store: State<ClipStore>,
-) -> Result<Vec<OpenedTrack>, String> {
+) -> Result<OpenedProject, String> {
     let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let patterns = project.patterns;
 
     let mut decoded = Vec::with_capacity(project.tracks.len());
     for track in project.tracks {
@@ -774,7 +881,7 @@ pub fn open_project(
         decoded.push((track, audio, path, size));
     }
 
-    decoded
+    let tracks = decoded
         .into_iter()
         .map(|(track, audio, path, size)| {
             let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
@@ -785,9 +892,48 @@ pub fn open_project(
                 soloed: track.soloed,
                 in_master: track.in_master,
                 offset: start_offset(track.offset_secs),
+                pattern_id: track.pattern_id,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(OpenedProject { tracks, patterns })
+}
+
+/// Sets the master bus: gain on the summed mix, and whether to limit it.
+#[tauri::command]
+pub fn set_master(master: MasterBus, engine: State<AudioEngine>) {
+    engine.mixer.set_master(master);
+}
+
+/// Renders a step pattern into a new clip, ready to be added as a track. Long
+/// patterns take seconds, so this stays off the UI thread.
+#[tauri::command(async)]
+pub fn render_pattern(
+    pattern: Pattern,
+    name: String,
+    store: State<ClipStore>,
+) -> Result<ClipInfo, String> {
+    let audio = pattern::render(&pattern)?;
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Pattern".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("pattern://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
+}
+
+/// Loops a pattern on its own, outside the timeline, so it can be heard while
+/// it is edited. Calling it again swaps the loop without restarting it.
+#[tauri::command]
+pub fn preview_pattern(pattern: Pattern, engine: State<AudioEngine>) -> Result<(), String> {
+    let bars = pattern.bars.min(pattern::PREVIEW_BARS);
+    let audio = pattern::render(&Pattern { bars, ..pattern })?;
+    engine.mixer.set_pattern_loop(Some(std::sync::Arc::new(audio)));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_pattern_preview(engine: State<AudioEngine>) {
+    engine.mixer.set_pattern_loop(None);
 }
 
 /// A track cannot start before the session does.

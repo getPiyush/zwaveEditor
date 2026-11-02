@@ -1,18 +1,19 @@
 import { useEffect, useState } from "react";
 
 import { listProjects, openProject, saveProject } from "../lib/api";
-import type { ProjectSummary, Track, WorkspaceInfo } from "../types";
+import type { OpenedProject, ProjectSummary, SavedPattern, Track, WorkspaceInfo } from "../types";
 import { WorkspaceBar } from "./WorkspaceBar";
 
 interface Props {
   mode: "save" | "open";
   tracks: Track[];
+  patterns: SavedPattern[];
   /** The project this session was last saved as or opened from, if any. */
   currentName: string | null;
   workspace: WorkspaceInfo | null;
   onWorkspaceChange: (path: string | null) => Promise<void>;
   onSaved: (name: string) => void;
-  onOpened: (name: string, tracks: Track[]) => void;
+  onOpened: (name: string, project: OpenedProject) => void;
   onClose: () => void;
 }
 
@@ -27,6 +28,7 @@ function savedOn(project: ProjectSummary): string {
 export function ProjectDialog({
   mode,
   tracks,
+  patterns,
   currentName,
   workspace,
   onWorkspaceChange,
@@ -66,7 +68,7 @@ export function ProjectDialog({
     setError(null);
     setResult(null);
     try {
-      const folder = await saveProject(trimmed, tracks);
+      const folder = await saveProject(trimmed, tracks, patterns);
       // The folder is named after the project, minus anything a path cannot hold.
       onSaved(folder.split(/[\\/]/).pop() ?? trimmed);
       setResult(`Saved to ${folder}`);
@@ -101,7 +103,11 @@ export function ProjectDialog({
         <h2 className="modal__title">{mode === "save" ? "Save project" : "Open project"}</h2>
         <p className="modal__subtitle">
           {mode === "save"
-            ? `${tracks.length} ${tracks.length === 1 ? "track" : "tracks"}, with edits and mixer settings.`
+            ? `${tracks.length} ${tracks.length === 1 ? "track" : "tracks"}, with edits and mixer settings${
+                patterns.length > 0
+                  ? `, and ${patterns.length} ${patterns.length === 1 ? "pattern" : "patterns"}`
+                  : ""
+              }.`
             : tracks.length > 0
               ? "Opening a project closes the tracks that are open now."
               : "Projects saved in this workspace."}
@@ -127,7 +133,7 @@ export function ProjectDialog({
                 type="button"
                 className="btn btn--primary"
                 onClick={() => void save()}
-                disabled={busy || !trimmed || tracks.length === 0}
+                disabled={busy || !trimmed || (tracks.length === 0 && patterns.length === 0)}
               >
                 {replaces ? "Replace saved project" : "Save"}
               </button>

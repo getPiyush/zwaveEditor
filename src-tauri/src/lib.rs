@@ -29,6 +29,8 @@ pub fn run() {
                 .join("zwaveEditor");
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             app.manage(Workspace::load(settings_path, default_root));
+            #[cfg(target_os = "macos")]
+            route_quit_through_the_window(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -45,12 +47,16 @@ pub fn run() {
             commands::crop_range,
             commands::copy_range,
             commands::paste_range,
+            commands::new_blank_clip,
+            commands::new_clip_from_clipboard,
             commands::undo_edit,
             commands::export_tracks,
             commands::export_master,
             commands::probe_input_device,
             commands::start_recording,
             commands::stop_recording,
+            commands::stop_recording_as_sample,
+            commands::cancel_recording,
             commands::reverse_range,
             commands::invert_range,
             commands::repeat_range,
@@ -72,7 +78,47 @@ pub fn run() {
             commands::save_project,
             commands::list_projects,
             commands::open_project,
+            commands::set_master,
+            commands::render_pattern,
+            commands::preview_pattern,
+            commands::stop_pattern_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running zwaveEditor");
+}
+
+/// The stock Quit item ends the app on the spot, so ⌘Q would skip the check for
+/// unsaved work. This one asks the window to close instead, which the UI hears.
+#[cfg(target_os = "macos")]
+fn route_quit_through_the_window(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+
+    const QUIT_ID: &str = "quit-with-check";
+
+    let menu = Menu::default(app.handle())?;
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        for item in app_menu.items()? {
+            let is_quit = match &item {
+                MenuItemKind::Predefined(predefined) => predefined.text()?.starts_with("Quit"),
+                _ => false,
+            };
+            if is_quit {
+                let label = format!("Quit {}", app.package_info().name);
+                let quit = MenuItem::with_id(app, QUIT_ID, label, true, Some("CmdOrCtrl+Q"))?;
+                app_menu.remove(&item)?;
+                app_menu.append(&quit)?;
+                break;
+            }
+        }
+    }
+    app.set_menu(menu)?;
+
+    app.on_menu_event(|app, event| {
+        if event.id() == QUIT_ID {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.close();
+            }
+        }
+    });
+    Ok(())
 }

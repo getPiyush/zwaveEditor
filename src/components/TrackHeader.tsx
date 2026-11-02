@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { HTMLAttributes } from "react";
 
 import { channelLayoutName, formatSampleRate, formatTime } from "../lib/format";
 import type { Track } from "../types";
@@ -7,12 +8,24 @@ interface Props {
   track: Track;
   colors: { peak: string; rms: string };
   index: number;
+  dragHandle: HTMLAttributes<HTMLElement>;
   onChange: (changes: Partial<Track>) => void;
   onRemove: () => void;
   onUndo: () => void;
+  /** Beat mode, for tracks made in the pattern editor. */
+  onEditPattern?: () => void;
 }
 
-export function TrackHeader({ track, colors, index, onChange, onRemove, onUndo }: Props) {
+export function TrackHeader({
+  track,
+  colors,
+  index,
+  dragHandle,
+  onChange,
+  onRemove,
+  onUndo,
+  onEditPattern,
+}: Props) {
   const { clip } = track;
   // What is typed into the start field, until it is committed.
   const [offsetDraft, setOffsetDraft] = useState<string | null>(null);
@@ -29,6 +42,15 @@ export function TrackHeader({ track, colors, index, onChange, onRemove, onUndo }
   return (
     <div className="track__header">
       <div className="track__title">
+        <button
+          type="button"
+          className="drag-handle"
+          title="Drag to rearrange, or use ↑/↓"
+          aria-label={`Move ${clip.name}`}
+          {...dragHandle}
+        >
+          ⠿
+        </button>
         <input
           type="checkbox"
           className="track__include"
@@ -41,6 +63,17 @@ export function TrackHeader({ track, colors, index, onChange, onRemove, onUndo }
         <span className="track__name" title={clip.path}>
           {index + 1}. {clip.name}
         </span>
+        {onEditPattern && (
+          <button
+            type="button"
+            className="track__icon track__pattern"
+            onClick={onEditPattern}
+            title="Edit this pattern"
+            aria-label={`Edit the pattern ${clip.name}`}
+          >
+            ▦
+          </button>
+        )}
         <button
           type="button"
           className="track__icon"

@@ -23,6 +23,7 @@ use crate::audio::export::{self, BitDepth};
 
 const TUNES_DIR: &str = "tunes";
 const PROJECTS_DIR: &str = "projects";
+const SAMPLES_DIR: &str = "samples";
 const PROJECT_FILE: &str = "project.json";
 const PROJECT_VERSION: u32 = 1;
 
@@ -102,6 +103,23 @@ impl Workspace {
     pub fn projects_dir(&self) -> PathBuf {
         self.root().join(PROJECTS_DIR)
     }
+
+    pub fn samples_dir(&self) -> PathBuf {
+        self.root().join(SAMPLES_DIR)
+    }
+}
+
+/// Writes a recorded sound under the next free "Recording N.wav" name.
+pub fn save_sample(samples_dir: &Path, audio: &DecodedAudio) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(samples_dir)
+        .map_err(|e| format!("could not create the samples folder: {e}"))?;
+    let path = (1u32..)
+        .map(|n| samples_dir.join(format!("Recording {n}.wav")))
+        .find(|path| !path.exists())
+        .ok_or_else(|| "the samples folder is full".to_string())?;
+    // Float keeps the samples exactly as they are in memory.
+    export::write_wav(&path, &audio.channels, audio.sample_rate, BitDepth::Float32)?;
+    Ok(path)
 }
 
 /// One file in the quick-tunes library.
@@ -198,6 +216,18 @@ pub struct ProjectTrack {
     pub soloed: bool,
     pub in_master: bool,
     pub offset_secs: f64,
+    /// The pattern this track was rendered from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern_id: Option<String>,
+}
+
+/// A pattern kept in a project. The grid belongs to the UI, so it is stored as
+/// it came, row ids and all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPattern {
+    pub id: String,
+    pub name: String,
+    pub pattern: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -207,6 +237,9 @@ pub struct ProjectFile {
     /// Seconds since the Unix epoch.
     pub saved_at: u64,
     pub tracks: Vec<ProjectTrack>,
+    /// Every pattern made in the project; projects saved before these existed have none.
+    #[serde(default)]
+    pub patterns: Vec<SavedPattern>,
 }
 
 /// A saved project, as the open dialog lists it.
@@ -244,8 +277,9 @@ pub fn save_project(
     projects_dir: &Path,
     name: &str,
     tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
+    patterns: Vec<SavedPattern>,
 ) -> Result<PathBuf, String> {
-    if tracks.is_empty() {
+    if tracks.is_empty() && patterns.is_empty() {
         return Err("there are no tracks to save".to_string());
     }
     let dir_name = project_dir_name(name)?;
@@ -258,7 +292,7 @@ pub fn save_project(
     std::fs::create_dir_all(staging.join("audio"))
         .map_err(|e| format!("could not create the project folder: {e}"))?;
 
-    let written = write_project(&staging, tracks).and_then(|()| {
+    let written = write_project(&staging, tracks, patterns).and_then(|()| {
         if target.exists() {
             std::fs::remove_dir_all(&target)
                 .map_err(|e| format!("could not replace the old project: {e}"))?;
@@ -272,7 +306,11 @@ pub fn save_project(
     written.map(|()| target)
 }
 
-fn write_project(dir: &Path, tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>) -> Result<(), String> {
+fn write_project(
+    dir: &Path,
+    tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
+    patterns: Vec<SavedPattern>,
+) -> Result<(), String> {
     let mut saved = Vec::with_capacity(tracks.len());
     for (index, (mut track, audio)) in tracks.into_iter().enumerate() {
         track.file = format!("audio/track-{:02}.wav", index + 1);
@@ -294,6 +332,7 @@ fn write_project(dir: &Path, tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>) -> 
             .unwrap_or_default()
             .as_secs(),
         tracks: saved,
+        patterns,
     };
     let text = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(PROJECT_FILE), text)

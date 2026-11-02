@@ -9,14 +9,54 @@ import {
   importAudio,
   insertAudioFile,
   isSupportedFile,
+  newBlankClip,
+  newClipFromClipboard,
   pasteRange,
   pickAudioFiles,
+  renderPattern,
+  setMaster,
   setMix,
+  stopPatternPreview,
   takeStartupFiles,
+  transportState,
   undoEdit,
 } from "./lib/api";
+import {
+  defaultPattern,
+  floorToBar,
+  loadBeat,
+  loadMode,
+  newPatternId,
+  samePattern,
+  saveBeat,
+  saveMode,
+  TRANSPARENT_MASTER,
+} from "./lib/beat";
+import { moveItem } from "./lib/useReorder";
+import { PatternDialog } from "./components/PatternDialog";
 import { SessionScreen } from "./components/SessionScreen";
-import type { ClipInfo, Selection, Track } from "./types";
+import type {
+  AppMode,
+  BeatSettings,
+  ClipInfo,
+  NewTrackSource,
+  OpenedProject,
+  Pattern,
+  SavedPattern,
+  Selection,
+  Track,
+} from "./types";
+
+/**
+ * The pattern dialog: a fresh pattern, or one the project keeps. `updating`
+ * means committing changes that pattern and the tracks made from it; otherwise
+ * committing adds a track and leaves the kept pattern as it is.
+ */
+interface PatternEditor {
+  pattern: Pattern;
+  patternId: string | null;
+  updating: boolean;
+}
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -26,6 +66,41 @@ export default function App() {
 
   // Guards against a second import batch starting while one is in flight.
   const busy = useRef(false);
+
+  // ----- Modes: editor is the original app; beat adds the music tools. -----
+  const [mode, setModeState] = useState<AppMode>(loadMode);
+  const [beat, setBeat] = useState<BeatSettings>(loadBeat);
+  const [patternEditor, setPatternEditor] = useState<PatternEditor | null>(null);
+  // Every pattern made in this project, kept even once its tracks are gone.
+  const [patterns, setPatterns] = useState<SavedPattern[]>([]);
+  const blankCount = useRef(0);
+  const copiedCount = useRef(0);
+
+  const changeMode = useCallback((next: AppMode) => {
+    setModeState(next);
+    saveMode(next);
+    if (next === "editor") {
+      setPatternEditor(null);
+      void stopPatternPreview().catch(() => {});
+    }
+  }, []);
+
+  const changeBeat = useCallback((changes: Partial<BeatSettings>) => {
+    setBeat((current) => {
+      const next = { ...current, ...changes };
+      saveBeat(next);
+      return next;
+    });
+  }, []);
+
+  // Editor mode always hears the plain sum, exactly as before the bus existed.
+  useEffect(() => {
+    const master =
+      mode === "beat" ? { gain: beat.masterGain, limiter: beat.limiter } : TRANSPARENT_MASTER;
+    setMaster(master).catch(() => {
+      /* Not running inside Tauri. */
+    });
+  }, [mode, beat.masterGain, beat.limiter]);
 
   const openPaths = useCallback(async (paths: string[]) => {
     if (busy.current || paths.length === 0) return;
@@ -105,9 +180,9 @@ export default function App() {
 
   /** Pastes over a range of a track, or inserts when the range is empty. */
   const pasteInto = useCallback(
-    async (target: Selection) => {
+    async (target: Selection, silence: number) => {
       try {
-        replaceClip(await pasteRange(target.clipId, target.start, target.end));
+        replaceClip(await pasteRange(target.clipId, target.start, target.end, silence));
         setError(null);
         return true;
       } catch (err) {
@@ -158,20 +233,26 @@ export default function App() {
     void closeClip(clipId);
   }, []);
 
+  const reorderTracks = useCallback((from: number, slot: number) => {
+    setTracks((current) => moveItem(current, from, slot));
+  }, []);
+
   const closeAll = useCallback(() => {
     setTracks((current) => {
       current.forEach((track) => void closeClip(track.clip.id));
       return [];
     });
+    setPatterns([]);
     setError(null);
   }, []);
 
-  /** Swaps the whole session for an opened project's tracks. */
-  const replaceSession = useCallback((opened: Track[]) => {
+  /** Swaps the whole session for an opened project's tracks and patterns. */
+  const replaceSession = useCallback((opened: OpenedProject) => {
     setTracks((current) => {
       current.forEach((track) => void closeClip(track.clip.id));
-      return opened;
+      return opened.tracks;
     });
+    setPatterns(opened.patterns);
     setError(null);
   }, []);
 
@@ -181,6 +262,111 @@ export default function App() {
       { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset: 0 },
     ]);
   }, []);
+
+  /** Adds a blank track, or one holding the clipboard. Returns its id, or null. */
+  const addNewTrack = useCallback(async (source: NewTrackSource, offset: number) => {
+    try {
+      const clip =
+        source.kind === "blank"
+          ? await newBlankClip(source.seconds, `Blank ${(blankCount.current += 1)}`)
+          : await newClipFromClipboard(`Copied ${(copiedCount.current += 1)}`);
+      setTracks((current) => [
+        ...current,
+        { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset },
+      ]);
+      setError(null);
+      return clip.id;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  }, []);
+
+  const openNewPattern = useCallback(() => {
+    setPatternEditor({ pattern: defaultPattern(beat.bpm), patternId: null, updating: false });
+  }, [beat.bpm]);
+
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+  const patternsRef = useRef(patterns);
+  patternsRef.current = patterns;
+
+  /** Opens a kept pattern to place it again, or to start a new one from it. */
+  const openSavedPattern = useCallback((id: string) => {
+    const saved = patternsRef.current.find((p) => p.id === id);
+    if (saved) setPatternEditor({ pattern: saved.pattern, patternId: id, updating: false });
+  }, []);
+
+  const openPatternFor = useCallback((clipId: number) => {
+    const track = tracksRef.current.find((t) => t.clip.id === clipId);
+    const saved = patternsRef.current.find((p) => p.id === track?.patternId);
+    if (saved) setPatternEditor({ pattern: saved.pattern, patternId: saved.id, updating: true });
+  }, []);
+
+  /**
+   * Updates a kept pattern and every track made from it, or adds a track. An
+   * added track only reuses a kept pattern if the grid is unchanged; anything
+   * else is kept as a new pattern, so the earlier one is never overwritten.
+   */
+  const commitPattern = useCallback(async (pattern: Pattern, editor: PatternEditor) => {
+    const saved = patternsRef.current.find((p) => p.id === editor.patternId);
+
+    if (saved && editor.updating) {
+      const linked = tracksRef.current.filter((t) => t.patternId === saved.id);
+      const clips = await Promise.all(
+        linked.map((t) =>
+          renderPattern(pattern, t.clip.name.replace(/\d+(\.\d+)? BPM$/, `${pattern.bpm} BPM`)),
+        ),
+      );
+      setPatterns((current) => current.map((p) => (p.id === saved.id ? { ...p, pattern } : p)));
+      setTracks((current) =>
+        current.map((t) => {
+          const index = linked.findIndex((l) => l.clip.id === t.clip.id);
+          return index < 0 ? t : { ...t, clip: clips[index] };
+        }),
+      );
+      linked.forEach((t) => void closeClip(t.clip.id));
+      return;
+    }
+
+    const entry: SavedPattern =
+      saved && samePattern(saved.pattern, pattern)
+        ? saved
+        : { id: newPatternId(), name: `Beat ${patternsRef.current.length + 1}`, pattern };
+
+    const clip = await renderPattern(pattern, `${entry.name} · ${pattern.bpm} BPM`);
+
+    if (entry !== saved) setPatterns((current) => [...current, entry]);
+
+    // New patterns land at the start of the bar the playhead is in.
+    let offset = 0;
+    try {
+      offset = floorToBar((await transportState()).positionSecs, pattern.bpm);
+    } catch {
+      /* No engine; start of the session. */
+    }
+    setTracks((current) => [
+      ...current,
+      { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset, patternId: entry.id },
+    ]);
+  }, []);
+
+  const openedPattern = patterns.find((p) => p.id === patternEditor?.patternId);
+  const linkedTracks = openedPattern ? tracks.filter((t) => t.patternId === openedPattern.id) : [];
+
+  let patternNote: string | undefined;
+  if (patternEditor?.updating) {
+    const parts: string[] = [];
+    if (linkedTracks.length > 1) {
+      parts.push(`Updating re-renders all ${linkedTracks.length} tracks made from this pattern.`);
+    }
+    if (linkedTracks.some((t) => t.clip.version > 0)) {
+      parts.push("Audio edits made to them since are replaced by the grid.");
+    }
+    patternNote = parts.join(" ") || undefined;
+  } else if (openedPattern) {
+    patternNote = `Adds a track. If you change the grid it is kept as a new pattern, and ${openedPattern.name} stays as it is.`;
+  }
 
   // The engine mirrors the track list, so publish the whole mix on any change.
   useEffect(() => {
@@ -227,24 +413,52 @@ export default function App() {
   }, [openPaths]);
 
   return (
+    <>
     <SessionScreen
       tracks={tracks}
+      patterns={patterns}
+      patternDraftOpen={mode === "beat" && patternEditor !== null}
       onAddFiles={browse}
       onOpenPaths={openPaths}
       onInsertFile={insertFile}
       onProjectOpened={replaceSession}
       onTrackChange={changeTrack}
       onTrackRemove={removeTrack}
+      onTrackReorder={reorderTracks}
       onCloseAll={closeAll}
       onEditSelection={editSelection}
       onCopySelection={copySelection}
       onPaste={pasteInto}
       onUndoTrack={undoTrack}
       onRecordingComplete={addRecording}
+      onNewTrack={addNewTrack}
       isDragging={isDragging}
       isImporting={importing !== null}
       importingName={importing}
       error={error}
+      mode={mode}
+      onModeChange={changeMode}
+      beat={mode === "beat" ? beat : undefined}
+      onBeatChange={changeBeat}
+      onNewPattern={openNewPattern}
+      onEditPattern={openPatternFor}
+      onOpenPattern={openSavedPattern}
     />
+    {mode === "beat" && patternEditor && (
+      <PatternDialog
+        initial={patternEditor.pattern}
+        bpm={beat.bpm}
+        title={
+          openedPattern
+            ? `${patternEditor.updating ? "Edit " : ""}${openedPattern.name}`
+            : "New pattern"
+        }
+        isUpdate={patternEditor.updating}
+        note={patternNote}
+        onCommit={(pattern) => commitPattern(pattern, patternEditor)}
+        onClose={() => setPatternEditor(null)}
+      />
+    )}
+    </>
   );
 }
