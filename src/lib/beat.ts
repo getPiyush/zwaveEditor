@@ -89,7 +89,7 @@ export function clampBpm(bpm: number): number {
 
 // ---------- Built-in voices ----------
 
-export type VoiceGroup = "Drums" | "Instruments";
+export type VoiceGroup = "Drums" | "Instruments" | "Orchestra";
 
 export interface VoiceInfo {
   voice: SynthVoice;
@@ -129,10 +129,27 @@ export const VOICES: VoiceInfo[] = [
   { voice: "marimba", label: "Marimba", group: "Instruments", note: 64, tuned: true, choke: false, gain: 0.55, range: [45, 96] },
   { voice: "synthLead", label: "Synth lead", group: "Instruments", note: 67, tuned: true, choke: true, gain: 0.35, range: [48, 91] },
   { voice: "chime", label: "Chime", group: "Instruments", note: 76, tuned: true, choke: false, gain: 0.45, range: [55, 96] },
+  { voice: "violin", label: "Violin", group: "Orchestra", note: 67, tuned: true, choke: true, gain: 0.4, range: [55, 100] },
+  { voice: "viola", label: "Viola", group: "Orchestra", note: 60, tuned: true, choke: true, gain: 0.4, range: [48, 88] },
+  { voice: "cello", label: "Cello", group: "Orchestra", note: 48, tuned: true, choke: true, gain: 0.45, range: [36, 76] },
+  { voice: "contrabass", label: "Double bass", group: "Orchestra", note: 36, tuned: true, choke: true, gain: 0.55, range: [28, 60] },
+  { voice: "pizzicato", label: "Pizzicato strings", group: "Orchestra", note: 55, tuned: true, choke: false, gain: 0.6, range: [36, 88] },
+  { voice: "harp", label: "Harp", group: "Orchestra", note: 60, tuned: true, choke: false, gain: 0.55, range: [24, 103] },
+  { voice: "oboe", label: "Oboe", group: "Orchestra", note: 69, tuned: true, choke: true, gain: 0.4, range: [58, 91] },
+  { voice: "clarinet", label: "Clarinet", group: "Orchestra", note: 62, tuned: true, choke: true, gain: 0.4, range: [50, 94] },
+  { voice: "bassoon", label: "Bassoon", group: "Orchestra", note: 46, tuned: true, choke: true, gain: 0.45, range: [34, 75] },
+  { voice: "trumpet", label: "Trumpet", group: "Orchestra", note: 67, tuned: true, choke: true, gain: 0.4, range: [54, 84] },
+  { voice: "frenchHorn", label: "French horn", group: "Orchestra", note: 53, tuned: true, choke: true, gain: 0.45, range: [41, 77] },
+  { voice: "trombone", label: "Trombone", group: "Orchestra", note: 50, tuned: true, choke: true, gain: 0.45, range: [40, 72] },
+  { voice: "tuba", label: "Tuba", group: "Orchestra", note: 36, tuned: true, choke: true, gain: 0.55, range: [28, 58] },
+  { voice: "timpani", label: "Timpani", group: "Orchestra", note: 43, tuned: true, choke: false, gain: 0.75, range: [38, 60] },
+  { voice: "glockenspiel", label: "Glockenspiel", group: "Orchestra", note: 79, tuned: true, choke: false, gain: 0.4, range: [67, 108] },
+  { voice: "xylophone", label: "Xylophone", group: "Orchestra", note: 72, tuned: true, choke: false, gain: 0.5, range: [60, 96] },
+  { voice: "celesta", label: "Celesta", group: "Orchestra", note: 72, tuned: true, choke: false, gain: 0.45, range: [60, 108] },
 ];
 
 export const VOICE_GROUPS: { group: VoiceGroup; voices: VoiceInfo[] }[] = (
-  ["Drums", "Instruments"] as const
+  ["Drums", "Instruments", "Orchestra"] as const
 ).map((group) => ({ group, voices: VOICES.filter((info) => info.group === group) }));
 
 export function voiceInfo(voice: SynthVoice): VoiceInfo {

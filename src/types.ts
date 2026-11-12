@@ -142,7 +142,24 @@ export type SynthVoice =
   | "brass"
   | "flute"
   | "marimba"
-  | "synthLead";
+  | "synthLead"
+  | "violin"
+  | "viola"
+  | "cello"
+  | "contrabass"
+  | "pizzicato"
+  | "harp"
+  | "oboe"
+  | "clarinet"
+  | "bassoon"
+  | "trumpet"
+  | "frenchHorn"
+  | "trombone"
+  | "tuba"
+  | "timpani"
+  | "glockenspiel"
+  | "xylophone"
+  | "celesta";
 
 export type RowSound =
   | { kind: "synth"; voice: SynthVoice }

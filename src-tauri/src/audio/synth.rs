@@ -40,6 +40,25 @@ pub enum Voice {
     Flute,
     Marimba,
     SynthLead,
+    // Orchestra, all tuned.
+    Violin,
+    Viola,
+    Cello,
+    Contrabass,
+    /// Plucked section strings.
+    Pizzicato,
+    Harp,
+    Oboe,
+    Clarinet,
+    Bassoon,
+    Trumpet,
+    FrenchHorn,
+    Trombone,
+    Tuba,
+    Timpani,
+    Glockenspiel,
+    Xylophone,
+    Celesta,
 }
 
 impl Voice {
@@ -90,6 +109,24 @@ pub fn render(voice: Voice, note: f32, rate: u32) -> Vec<f32> {
         Voice::Flute => flute(note_to_hz(note), rate),
         Voice::Marimba => marimba(note_to_hz(note), rate),
         Voice::SynthLead => synth_lead(note_to_hz(note), rate),
+        Voice::Violin => bowed(note_to_hz(note), rate, Bow { bright: 7.0, body: 2_800.0, vibrato: 0.006, seconds: 1.6, seed: 0x7101 }),
+        Voice::Viola => bowed(note_to_hz(note), rate, Bow { bright: 5.5, body: 1_900.0, vibrato: 0.005, seconds: 1.7, seed: 0x7102 }),
+        Voice::Cello => bowed(note_to_hz(note), rate, Bow { bright: 5.0, body: 1_100.0, vibrato: 0.005, seconds: 1.9, seed: 0xce11 }),
+        Voice::Contrabass => bowed(note_to_hz(note), rate, Bow { bright: 4.0, body: 600.0, vibrato: 0.003, seconds: 1.9, seed: 0xcb55 }),
+        Voice::Pizzicato => pluck(note_to_hz(note), rate, 0.3, 0.7, 0x9122),
+        Voice::Harp => harp(note_to_hz(note), rate),
+        // Reeds: the harmonic recipe is what tells them apart.
+        Voice::Oboe => reed(note_to_hz(note), rate, Reed { formant: 1_400.0, odd_only: false, breath: 0.06, seconds: 1.3, seed: 0x0b0e }),
+        Voice::Clarinet => reed(note_to_hz(note), rate, Reed { formant: 2_200.0, odd_only: true, breath: 0.04, seconds: 1.3, seed: 0xc1a1 }),
+        Voice::Bassoon => reed(note_to_hz(note), rate, Reed { formant: 500.0, odd_only: false, breath: 0.05, seconds: 1.4, seed: 0xba55 }),
+        Voice::Trumpet => horn(note_to_hz(note), rate, Horn { open: 8.0, rest: 3.5, attack: 0.02, seconds: 1.0 }),
+        Voice::FrenchHorn => horn(note_to_hz(note), rate, Horn { open: 2.5, rest: 1.6, attack: 0.06, seconds: 1.4 }),
+        Voice::Trombone => horn(note_to_hz(note), rate, Horn { open: 6.0, rest: 2.5, attack: 0.035, seconds: 1.2 }),
+        Voice::Tuba => horn(note_to_hz(note), rate, Horn { open: 3.0, rest: 1.8, attack: 0.05, seconds: 1.3 }),
+        Voice::Timpani => timpani(note_to_hz(note), rate),
+        Voice::Glockenspiel => glockenspiel(note_to_hz(note), rate),
+        Voice::Xylophone => xylophone(note_to_hz(note), rate),
+        Voice::Celesta => celesta(note_to_hz(note), rate),
     };
     declick_tail(&mut out, rate);
     normalize(&mut out, HIT_PEAK);
@@ -453,6 +490,189 @@ fn synth_lead(freq: f32, rate: f32) -> Vec<f32> {
         .collect()
 }
 
+/// How a bowed string is played: how bright the bow makes it, where the
+/// wooden body's resonance sits, and how wide the player's vibrato is.
+struct Bow {
+    /// Lowpass cutoff as a multiple of the note.
+    bright: f32,
+    body: f32,
+    vibrato: f32,
+    seconds: f32,
+    seed: u32,
+}
+
+/// A single bowed string: a sawtooth (the stick-slip motion of the bow),
+/// a little bow hiss and a body resonance. Unlike `strings` it is one player,
+/// so there is no chorus.
+fn bowed(freq: f32, rate: f32, bow: Bow) -> Vec<f32> {
+    let mut noise = Noise::new(bow.seed);
+    let mut lowpass = Biquad::lowpass((freq * bow.bright).clamp(600.0, 9_000.0), 0.7, rate);
+    let mut body = Biquad::bandpass(bow.body, 1.2, rate);
+    let mut hiss = Biquad::bandpass((freq * 3.0).min(6_000.0), 2.0, rate);
+    let mut phase = 0.0f32;
+    (0..frames(bow.seconds, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let vibrato = 1.0 + bow.vibrato * (TAU * 5.5 * t).sin() * attack(t, 0.35);
+            phase = (phase + freq * vibrato / rate).fract();
+            let string = lowpass.process(saw(phase));
+            let tone = string + body.process(string) * 0.6;
+            // The bow scratches as it bites, then settles into the note.
+            let scratch = hiss.process(noise.next()) * (0.04 + 0.3 * (-t * 25.0).exp());
+            (tone + scratch) * attack(t, 0.07) * release(t, bow.seconds, 0.3)
+        })
+        .collect()
+}
+
+fn harp(freq: f32, rate: f32) -> Vec<f32> {
+    // A soft, round pluck (the finger, not a pick) that rings a long time,
+    // plus a pure sine to give it the harp's glassy fundamental.
+    let string = pluck(freq, rate, 0.25, 2.5, 0x4a29);
+    string
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f32 / rate;
+            s + (TAU * freq * t).sin() * (-t * 1.8).exp() * 0.25 * attack(t, 0.003)
+        })
+        .collect()
+}
+
+/// A double or single reed, built from harmonics shaped by one formant.
+struct Reed {
+    /// Where the instrument's tone colour peaks, in Hz.
+    formant: f32,
+    /// The clarinet's cylindrical bore all but drops the even harmonics.
+    odd_only: bool,
+    breath: f32,
+    seconds: f32,
+    seed: u32,
+}
+
+fn reed(freq: f32, rate: f32, reed: Reed) -> Vec<f32> {
+    let mut noise = Noise::new(reed.seed);
+    let mut air = Biquad::bandpass(reed.formant, 1.0, rate);
+    let nyquist = rate * 0.45;
+    let harmonics: Vec<(f32, f32)> = (1..=16)
+        .filter_map(|n| {
+            let n = n as f32;
+            let f = freq * n;
+            if f >= nyquist {
+                return None;
+            }
+            let even = n as u32 % 2 == 0;
+            let base = if reed.odd_only && even { 0.05 } else { 1.0 } / n.sqrt();
+            // Bell-shaped boost around the formant, on a log-frequency scale.
+            let octaves = (f / reed.formant).log2();
+            let boost = 0.3 + (-octaves * octaves * 1.5).exp();
+            Some((f, base * boost))
+        })
+        .collect();
+    let mut phase = 0.0f32;
+    (0..frames(reed.seconds, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let vibrato = 1.0 + 0.004 * (TAU * 5.0 * t).sin() * attack(t, 0.4);
+            phase = (phase + freq * vibrato / rate).fract();
+            let tone: f32 = harmonics
+                .iter()
+                .map(|(f, amp)| (TAU * phase * f / freq).sin() * amp)
+                .sum();
+            let breath = air.process(noise.next()) * reed.breath * 4.0;
+            (tone + breath) * attack(t, 0.04) * release(t, reed.seconds, 0.2)
+        })
+        .collect()
+}
+
+/// A brass instrument: how far the filter opens on the attack (`open`) and
+/// where it settles (`rest`), both as multiples of the note. A trumpet opens
+/// wide and bright; a horn stays dark and mellow.
+struct Horn {
+    open: f32,
+    rest: f32,
+    attack: f32,
+    seconds: f32,
+}
+
+fn horn(freq: f32, rate: f32, horn: Horn) -> Vec<f32> {
+    let mut phase = 0.0f32;
+    let mut lowpass = Biquad::lowpass(freq * horn.rest, 0.9, rate);
+    (0..frames(horn.seconds, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let vibrato = 1.0 + 0.003 * (TAU * 5.0 * t).sin() * attack(t, 0.5);
+            phase = (phase + freq * vibrato / rate).fract();
+            let swell = (1.0 - (-t / horn.attack).exp()) * (-t * 2.0).exp();
+            lowpass.set_lowpass(freq * (horn.rest + horn.open * swell), 0.9, rate);
+            lowpass.process(saw(phase)) * attack(t, horn.attack) * release(t, horn.seconds, 0.15)
+        })
+        .collect()
+}
+
+fn timpani(freq: f32, rate: f32) -> Vec<f32> {
+    let mut noise = Noise::new(0x7177);
+    let mut thud = Biquad::lowpass(400.0, 0.7, rate);
+    // The kettle tunes the drumhead's modes to a nearly harmonic series,
+    // which is why a timpani has a clear pitch where a tom only hints at one.
+    let modes = [(1.0f32, 1.0f32, 2.2f32), (1.99, 0.4, 3.5), (3.01, 0.2, 5.0)];
+    let nyquist = rate * 0.45;
+    (0..frames(2.0, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            // The head is tightest right after the strike, so it starts a touch sharp.
+            let bend = 1.0 + 0.015 * (-t * 30.0).exp();
+            let tone: f32 = modes
+                .iter()
+                .filter(|(ratio, _, _)| freq * ratio < nyquist)
+                .map(|(ratio, amp, decay)| (TAU * freq * ratio * bend * t).sin() * amp * (-t * decay).exp())
+                .sum();
+            let mallet = thud.process(noise.next()) * (-t * 60.0).exp() * 0.6;
+            (tone + mallet) * attack(t, 0.002)
+        })
+        .collect()
+}
+
+/// A struck bar or plate: sine partials, each with its own decay.
+fn struck(freq: f32, rate: f32, partials: &[(f32, f32, f32)], seconds: f32) -> Vec<f32> {
+    let nyquist = rate * 0.45;
+    (0..frames(seconds, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let tone: f32 = partials
+                .iter()
+                .filter(|(ratio, _, _)| freq * ratio < nyquist)
+                .map(|(ratio, amp, decay)| (TAU * freq * ratio * t).sin() * amp * (-t * decay).exp())
+                .sum();
+            tone * attack(t, 0.001)
+        })
+        .collect()
+}
+
+fn glockenspiel(freq: f32, rate: f32) -> Vec<f32> {
+    // Steel bars: bright, inharmonic overtones and a long ring.
+    struck(freq, rate, &[(1.0, 1.0, 1.6), (2.76, 0.25, 6.0), (5.4, 0.15, 12.0), (8.93, 0.08, 20.0)], 2.2)
+}
+
+fn xylophone(freq: f32, rate: f32) -> Vec<f32> {
+    // Like the marimba, but its bars are tuned to a twelfth (3x) and stop
+    // ringing much sooner: dry and woody.
+    let mut noise = Noise::new(0x3710);
+    let mut click = Biquad::bandpass((freq * 4.0).min(8_000.0), 1.5, rate);
+    let bars = struck(freq, rate, &[(1.0, 1.0, 9.0), (3.0, 0.45, 20.0), (6.0, 0.12, 40.0)], 0.6);
+    bars.iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f32 / rate;
+            s + click.process(noise.next()) * (-t * 400.0).exp() * 0.3
+        })
+        .collect()
+}
+
+fn celesta(freq: f32, rate: f32) -> Vec<f32> {
+    // Hammered steel plates over wooden resonators: a sweet, almost pure tone.
+    struck(freq, rate, &[(1.0, 1.0, 2.4), (2.0, 0.25, 4.0), (4.0, 0.12, 8.0)], 1.8)
+}
+
 /// Fades the last few milliseconds so a hit never ends on a jump.
 fn declick_tail(samples: &mut [f32], rate: f32) {
     let fade = frames(0.004, rate).min(samples.len());
@@ -569,7 +789,7 @@ impl Biquad {
 mod tests {
     use super::*;
 
-    const ALL: [Voice; 21] = [
+    const ALL: [Voice; 38] = [
         Voice::Kick,
         Voice::Bass808,
         Voice::Snare,
@@ -591,9 +811,26 @@ mod tests {
         Voice::Flute,
         Voice::Marimba,
         Voice::SynthLead,
+        Voice::Violin,
+        Voice::Viola,
+        Voice::Cello,
+        Voice::Contrabass,
+        Voice::Pizzicato,
+        Voice::Harp,
+        Voice::Oboe,
+        Voice::Clarinet,
+        Voice::Bassoon,
+        Voice::Trumpet,
+        Voice::FrenchHorn,
+        Voice::Trombone,
+        Voice::Tuba,
+        Voice::Timpani,
+        Voice::Glockenspiel,
+        Voice::Xylophone,
+        Voice::Celesta,
     ];
 
-    const INSTRUMENTS: [Voice; 10] = [
+    const INSTRUMENTS: [Voice; 27] = [
         Voice::Piano,
         Voice::ElectricPiano,
         Voice::Guitar,
@@ -604,6 +841,23 @@ mod tests {
         Voice::Flute,
         Voice::Marimba,
         Voice::SynthLead,
+        Voice::Violin,
+        Voice::Viola,
+        Voice::Cello,
+        Voice::Contrabass,
+        Voice::Pizzicato,
+        Voice::Harp,
+        Voice::Oboe,
+        Voice::Clarinet,
+        Voice::Bassoon,
+        Voice::Trumpet,
+        Voice::FrenchHorn,
+        Voice::Trombone,
+        Voice::Tuba,
+        Voice::Timpani,
+        Voice::Glockenspiel,
+        Voice::Xylophone,
+        Voice::Celesta,
     ];
 
     /// The fundamental of `samples` by autocorrelation: the first lag (shortest
