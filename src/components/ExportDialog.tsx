@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { exportMaster, exportTracks, pickDirectory, pickSavePath } from "../lib/api";
-import type { BitDepth, MasterBus, Track } from "../types";
+import type { ExportFormat, MasterBus, Track } from "../types";
 
 interface Props {
   tracks: Track[];
@@ -10,15 +10,86 @@ interface Props {
   onClose: () => void;
 }
 
-const DEPTHS: { value: BitDepth; label: string }[] = [
-  { value: "int16", label: "16-bit PCM" },
-  { value: "int24", label: "24-bit PCM" },
-  { value: "float32", label: "32-bit float" },
+type FormatKind = ExportFormat["kind"];
+
+interface FormatChoice {
+  kind: FormatKind;
+  label: string;
+  /** File-dialog filter name. */
+  filter: string;
+  /** Settings for this format; `defaultIndex` picks the one selected first. */
+  options: { label: string; format: ExportFormat }[];
+  defaultIndex: number;
+}
+
+const FORMATS: FormatChoice[] = [
+  {
+    kind: "wav",
+    label: "WAV",
+    filter: "WAV audio",
+    options: [
+      { label: "16-bit PCM", format: { kind: "wav", bitDepth: "int16" } },
+      { label: "24-bit PCM", format: { kind: "wav", bitDepth: "int24" } },
+      { label: "32-bit float", format: { kind: "wav", bitDepth: "float32" } },
+    ],
+    defaultIndex: 0,
+  },
+  {
+    kind: "flac",
+    label: "FLAC (lossless)",
+    filter: "FLAC audio",
+    options: [
+      { label: "16-bit", format: { kind: "flac", bitDepth: "int16" } },
+      { label: "24-bit", format: { kind: "flac", bitDepth: "int24" } },
+    ],
+    defaultIndex: 0,
+  },
+  {
+    kind: "mp3",
+    label: "MP3",
+    filter: "MP3 audio",
+    options: [128, 192, 256, 320].map((kbps) => ({
+      label: `${kbps} kbps`,
+      format: { kind: "mp3", kbps },
+    })),
+    defaultIndex: 1,
+  },
+  {
+    kind: "aac",
+    label: "AAC",
+    filter: "AAC audio",
+    options: [128, 192, 256, 320].map((kbps) => ({
+      label: `${kbps} kbps`,
+      format: { kind: "aac", kbps },
+    })),
+    defaultIndex: 1,
+  },
+  {
+    kind: "ogg",
+    label: "Ogg Vorbis",
+    filter: "Ogg Vorbis audio",
+    options: [
+      { label: "Quality 3 (~112 kbps)", format: { kind: "ogg", quality: 0.3 } },
+      { label: "Quality 5 (~160 kbps)", format: { kind: "ogg", quality: 0.5 } },
+      { label: "Quality 7 (~224 kbps)", format: { kind: "ogg", quality: 0.7 } },
+      { label: "Quality 9 (~320 kbps)", format: { kind: "ogg", quality: 0.9 } },
+    ],
+    defaultIndex: 1,
+  },
 ];
 
 /** Exports the tracks that are checked into the master. */
 export function ExportDialog({ tracks, master, onClose }: Props) {
-  const [bitDepth, setBitDepth] = useState<BitDepth>("int16");
+  const [kind, setKind] = useState<FormatKind>("wav");
+  const [optionIndex, setOptionIndex] = useState(0);
+  const choice = FORMATS.find((f) => f.kind === kind) ?? FORMATS[0];
+  const format = (choice.options[optionIndex] ?? choice.options[choice.defaultIndex]).format;
+
+  const chooseKind = (next: FormatKind) => {
+    const nextChoice = FORMATS.find((f) => f.kind === next) ?? FORMATS[0];
+    setKind(next);
+    setOptionIndex(nextChoice.defaultIndex);
+  };
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,9 +112,12 @@ export function ExportDialog({ tracks, master, onClose }: Props) {
 
   const exportMix = () =>
     run(async () => {
-      const path = await pickSavePath("master-mix.wav");
+      const path = await pickSavePath(`master-mix.${kind}`, {
+        name: choice.filter,
+        extension: kind,
+      });
       if (!path) return null;
-      const written = await exportMaster(selected, path, bitDepth, master);
+      const written = await exportMaster(selected, path, format, master);
       return `Wrote the master mix to ${written}`;
     });
 
@@ -54,7 +128,7 @@ export function ExportDialog({ tracks, master, onClose }: Props) {
       const written = await exportTracks(
         selected.map((track) => track.clip.id),
         directory,
-        bitDepth,
+        format,
       );
       return `Wrote ${written.length} ${written.length === 1 ? "file" : "files"} to ${directory}`;
     });
@@ -87,13 +161,28 @@ export function ExportDialog({ tracks, master, onClose }: Props) {
         <label className="modal__field">
           <span>Format</span>
           <select
-            value={bitDepth}
-            onChange={(event) => setBitDepth(event.target.value as BitDepth)}
+            value={kind}
+            onChange={(event) => chooseKind(event.target.value as FormatKind)}
             disabled={busy}
           >
-            {DEPTHS.map((depth) => (
-              <option key={depth.value} value={depth.value}>
-                WAV · {depth.label}
+            {FORMATS.map((f) => (
+              <option key={f.kind} value={f.kind}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="modal__field">
+          <span>{kind === "wav" || kind === "flac" ? "Bit depth" : "Quality"}</span>
+          <select
+            value={optionIndex}
+            onChange={(event) => setOptionIndex(Number(event.target.value))}
+            disabled={busy}
+          >
+            {choice.options.map((option, index) => (
+              <option key={option.label} value={index}>
+                {option.label}
               </option>
             ))}
           </select>
@@ -120,6 +209,8 @@ export function ExportDialog({ tracks, master, onClose }: Props) {
           The master mix is summed to stereo at the highest sample rate in use.
           Separate files keep each track's own rate and channels, and ignore where the
           track starts.
+          {(kind === "mp3" || kind === "aac") &&
+            " MP3 and AAC hold at most two channels, and rates above what the format supports are resampled."}
         </p>
 
         <div className="modal__footer">

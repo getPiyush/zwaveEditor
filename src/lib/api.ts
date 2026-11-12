@@ -3,14 +3,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
-  BitDepth,
   ClipInfo,
+  ExportFormat,
   InputDeviceInfo,
   MasterBus,
   Pattern,
   PeakData,
   PreviewState,
   OpenedProject,
+  ProjectContents,
   ProjectSummary,
   RecordedSample,
   SavedPattern,
@@ -145,15 +146,23 @@ export function newClipFromClipboard(name: string): Promise<ClipInfo> {
   return invoke<ClipInfo>("new_clip_from_clipboard", { name });
 }
 
+/** Renames a clip; projects save tracks under this name. */
+export function renameClip(clipId: number, name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("rename_clip", { clipId, name });
+}
+
 export function undoEdit(clipId: number): Promise<ClipInfo> {
   return invoke<ClipInfo>("undo_edit", { clipId });
 }
 
 /** Asks where to save a single file. Returns null if the user cancelled. */
-export async function pickSavePath(defaultName: string): Promise<string | null> {
+export async function pickSavePath(
+  defaultName: string,
+  filter: { name: string; extension: string } = { name: "WAV audio", extension: "wav" },
+): Promise<string | null> {
   const path = await save({
     defaultPath: defaultName,
-    filters: [{ name: "WAV audio", extensions: ["wav"] }],
+    filters: [{ name: filter.name, extensions: [filter.extension] }],
   });
   return path ?? null;
 }
@@ -164,26 +173,26 @@ export async function pickDirectory(): Promise<string | null> {
   return typeof directory === "string" ? directory : null;
 }
 
-/** Writes each selected track to its own WAV file. Returns the paths written. */
+/** Writes each selected track to its own file. Returns the paths written. */
 export function exportTracks(
   clipIds: number[],
   directory: string,
-  bitDepth: BitDepth,
+  format: ExportFormat,
 ): Promise<string[]> {
-  return invoke<string[]>("export_tracks", { clipIds, directory, bitDepth });
+  return invoke<string[]>("export_tracks", { clipIds, directory, format });
 }
 
-/** Mixes the selected tracks down to one stereo WAV. */
+/** Mixes the selected tracks down to one stereo file. */
 export function exportMaster(
   tracks: Track[],
   path: string,
-  bitDepth: BitDepth,
+  format: ExportFormat,
   master?: MasterBus,
 ): Promise<string> {
   return invoke<string>("export_master", {
     tracks: mixSettings(tracks),
     path,
-    bitDepth,
+    format,
     master: master ?? null,
   });
 }
@@ -271,6 +280,33 @@ export function adjustVolume(
   });
 }
 
+/** Which voice tools to run; omitted ones are skipped. Mirrors `voice::VoiceChain`. */
+export interface VoiceChain {
+  highPassHz?: number;
+  denoise?: number;
+  deEss?: number;
+  clarityDb?: number;
+  level?: boolean;
+}
+
+/** The one-click "Enhance voice" settings. */
+export const VOICE_PRESET: VoiceChain = {
+  highPassHz: 80,
+  denoise: 0.6,
+  deEss: 0.5,
+  clarityDb: 3,
+  level: true,
+};
+
+export function enhanceVoice(
+  clipId: number,
+  start: number,
+  end: number,
+  chain: VoiceChain,
+): Promise<ClipInfo> {
+  return invoke<ClipInfo>("enhance_voice", { clipId, startSecs: start, endSecs: end, chain });
+}
+
 export function fadeIn(clipId: number, start: number, end: number): Promise<ClipInfo> {
   return invoke<ClipInfo>("fade_in", { clipId, startSecs: start, endSecs: end });
 }
@@ -348,6 +384,16 @@ export function previewPlay(name: string): Promise<void> {
   return invoke("preview_play", { name });
 }
 
+/** Plays one track of a saved project in the preview player. */
+export function previewProjectTrack(name: string, index: number): Promise<void> {
+  return invoke("preview_project_track", { name, index });
+}
+
+/** The preview name `previewProjectTrack` plays under, to match `PreviewState.name`. */
+export function projectPreviewKey(name: string, index: number): string {
+  return `project/${name}/${index}`;
+}
+
 export function previewPause(): Promise<void> {
   return invoke("preview_pause");
 }
@@ -384,6 +430,16 @@ export function listProjects(): Promise<ProjectSummary[]> {
 /** Loads a project's tracks as new clips, and its patterns, ready to replace the session. */
 export function openProject(name: string): Promise<OpenedProject> {
   return invoke<OpenedProject>("open_project", { name });
+}
+
+/** Lists a project's tracks and patterns, without loading any audio. */
+export function projectContents(name: string): Promise<ProjectContents> {
+  return invoke<ProjectContents>("project_contents", { name });
+}
+
+/** Loads one track of a saved project as a new clip, staged as it was saved. */
+export function importProjectTrack(name: string, index: number): Promise<Track> {
+  return invoke<Track>("import_project_track", { name, index });
 }
 
 /**

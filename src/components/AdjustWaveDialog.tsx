@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { adjustVolume, fadeIn, fadeOut, adjustPitch, adjustTime, reverseRange, invertRange } from "../lib/api";
+import {
+  adjustVolume,
+  fadeIn,
+  fadeOut,
+  adjustPitch,
+  adjustTime,
+  reverseRange,
+  invertRange,
+  enhanceVoice,
+  VOICE_PRESET,
+  type VoiceChain,
+} from "../lib/api";
 import type { Selection } from "../types";
 
 import type { ClipInfo } from "../types";
@@ -14,6 +25,7 @@ export function AdjustWaveDialog({ selection, onClipUpdated, onClose }: Props) {
   const [volume, setVolume] = useState(1);
   const [pitch, setPitch] = useState(1);
   const [time, setTime] = useState(1);
+  const [denoise, setDenoise] = useState(0.6);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,6 +89,19 @@ export function AdjustWaveDialog({ selection, onClipUpdated, onClose }: Props) {
       setProcessing(true);
       const updated = await adjustTime(selection.clipId, selection.start, selection.end, time);
       setTime(1);
+      setProcessing(false);
+      onClipUpdated(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setProcessing(false);
+    }
+  };
+
+  const handleVoice = async (chain: VoiceChain) => {
+    try {
+      setError(null);
+      setProcessing(true);
+      const updated = await enhanceVoice(selection.clipId, selection.start, selection.end, chain);
       setProcessing(false);
       onClipUpdated(updated);
     } catch (err) {
@@ -206,6 +231,72 @@ export function AdjustWaveDialog({ selection, onClipUpdated, onClose }: Props) {
               >
                 Fade Out
               </button>
+            </div>
+
+            <div className="adjust-section adjust-section--voice">
+              <h3>Voice</h3>
+              <button
+                onClick={() => handleVoice(VOICE_PRESET)}
+                disabled={processing}
+                className="btn btn--small"
+                title="Remove rumble and noise, tame harsh s sounds, add clarity and even out the level"
+              >
+                {processing ? "Processing…" : "Enhance voice"}
+              </button>
+              <label>
+                Noise reduction: {(denoise * 100).toFixed(0)}%
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1"
+                  step="0.1"
+                  value={denoise}
+                  onChange={(e) => setDenoise(parseFloat(e.target.value))}
+                  disabled={processing}
+                />
+              </label>
+              <div className="adjust-voice-tools">
+                <button
+                  onClick={() => handleVoice({ denoise })}
+                  disabled={processing}
+                  className="btn btn--secondary btn--small"
+                  title="Learns the background noise from the quiet gaps in the selection and removes it"
+                >
+                  Reduce noise
+                </button>
+                <button
+                  onClick={() => handleVoice({ highPassHz: 80 })}
+                  disabled={processing}
+                  className="btn btn--secondary btn--small"
+                  title="Cut low rumble, hum, and mic thumps below 80 Hz"
+                >
+                  Remove rumble
+                </button>
+                <button
+                  onClick={() => handleVoice({ deEss: 0.6 })}
+                  disabled={processing}
+                  className="btn btn--secondary btn--small"
+                  title="Soften harsh s and sh sounds"
+                >
+                  De-ess
+                </button>
+                <button
+                  onClick={() => handleVoice({ clarityDb: 3 })}
+                  disabled={processing}
+                  className="btn btn--secondary btn--small"
+                  title="Boost presence and air so speech cuts through"
+                >
+                  Clarity
+                </button>
+                <button
+                  onClick={() => handleVoice({ level: true })}
+                  disabled={processing}
+                  className="btn btn--secondary btn--small"
+                  title="Even out loud and quiet words, then bring the level up to -1 dB"
+                >
+                  Level
+                </button>
+              </div>
             </div>
 
             <div className="adjust-buttons">

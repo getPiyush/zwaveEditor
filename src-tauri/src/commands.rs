@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::audio::engine::{AudioEngine, Preview, Track};
-use crate::audio::export::BitDepth;
+use crate::audio::encode::{self, ExportFormat};
 use crate::audio::master::MasterBus;
 use crate::audio::pattern::{self, Pattern};
 use crate::audio::recording::{self, Recorder};
-use crate::audio::{decode, edit, export, peaks, ClipEntry, ClipStore, Clipboard};
+use crate::audio::{decode, edit, export, peaks, voice, ClipEntry, ClipStore, Clipboard};
 use crate::workspace::{self, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
 
 /// Everything the UI needs to describe an imported file.
@@ -292,13 +292,23 @@ pub fn undo_edit(clip_id: u64, store: State<ClipStore>) -> Result<ClipInfo, Stri
     store.undo(clip_id, |entry| clip_info(clip_id, entry))
 }
 
-/// Writes each clip to its own WAV file inside `directory`, at its native rate
+/// Gives a clip a new name, as typed on its track header.
+#[tauri::command]
+pub fn rename_clip(clip_id: u64, name: String, store: State<ClipStore>) -> Result<ClipInfo, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("give the track a name".to_string());
+    }
+    store.rename(clip_id, name.to_string(), |entry| clip_info(clip_id, entry))
+}
+
+/// Writes each clip to its own file in `format` inside `directory`, at its native rate
 /// and channel count. Returns the paths written.
 #[tauri::command]
 pub fn export_tracks(
     clip_ids: Vec<u64>,
     directory: String,
-    bit_depth: BitDepth,
+    format: ExportFormat,
     store: State<ClipStore>,
 ) -> Result<Vec<String>, String> {
     if clip_ids.is_empty() {
@@ -315,21 +325,21 @@ pub fn export_tracks(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("track");
-        let path = unique_path(Path::new(&directory).join(format!("{stem}.wav")));
+        let path = unique_path(Path::new(&directory).join(format!("{stem}.{}", format.extension())));
 
-        export::write_wav(&path, &audio.channels, audio.sample_rate, bit_depth)?;
+        encode::write_audio(&path, &audio.channels, audio.sample_rate, format)?;
         written.push(path.to_string_lossy().to_string());
     }
 
     Ok(written)
 }
 
-/// Mixes the selected tracks down to a single stereo WAV.
+/// Mixes the selected tracks down to a single stereo file in `format`.
 #[tauri::command]
 pub fn export_master(
     tracks: Vec<TrackSetting>,
     path: String,
-    bit_depth: BitDepth,
+    format: ExportFormat,
     master: Option<MasterBus>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
@@ -354,7 +364,7 @@ pub fn export_master(
 
     let rendered = export::render_master_with(&sources, sample_rate, master.unwrap_or_default());
     let path_buf = PathBuf::from(&path);
-    export::write_wav(&path_buf, &rendered, sample_rate, bit_depth)?;
+    encode::write_audio(&path_buf, &rendered, sample_rate, format)?;
     Ok(path)
 }
 
@@ -627,6 +637,24 @@ pub fn adjust_pitch(
 }
 
 #[tauri::command]
+pub fn enhance_voice(
+    clip_id: u64,
+    start_secs: f64,
+    end_secs: f64,
+    chain: voice::VoiceChain,
+    store: State<ClipStore>,
+) -> Result<ClipInfo, String> {
+    store.edit(
+        clip_id,
+        |audio| {
+            let (start, end) = edit::frame_range(audio, start_secs, end_secs);
+            voice::enhance(audio, start, end, &chain)
+        },
+        |entry| clip_info(clip_id, entry),
+    )
+}
+
+#[tauri::command]
 pub fn adjust_time(
     clip_id: u64,
     start_secs: f64,
@@ -764,6 +792,43 @@ pub fn preview_play(
     Ok(())
 }
 
+/// The preview key for a project's track. A `/` can't be in a file name, so
+/// this never matches a tune's name.
+fn project_preview_key(project: &str, index: usize) -> String {
+    format!("project/{project}/{index}")
+}
+
+/// Plays one track of a saved project in the preview player, as `preview_play`
+/// does a tune. Its preview name is `project_preview_key`.
+#[tauri::command(async)]
+pub fn preview_project_track(
+    name: String,
+    index: usize,
+    workspace: State<Workspace>,
+    engine: State<AudioEngine>,
+) -> Result<(), String> {
+    let key = project_preview_key(&name, index);
+    engine.mixer.pause();
+    if engine.mixer.preview_name().as_deref() == Some(key.as_str()) && engine.mixer.resume_preview()
+    {
+        return Ok(());
+    }
+
+    engine.mixer.pause_preview();
+    let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let track = project
+        .tracks
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| format!("{name} has no track {}", index + 1))?;
+    let (_, audio, _, _) = decode_project_track(&dir, track)?;
+    engine.mixer.start_preview(Preview {
+        name: key,
+        audio: std::sync::Arc::new(audio),
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn preview_pause(engine: State<AudioEngine>) {
     engine.mixer.pause_preview();
@@ -875,29 +940,89 @@ pub fn open_project(
 
     let mut decoded = Vec::with_capacity(project.tracks.len());
     for track in project.tracks {
-        let path = dir.join(&track.file);
-        let audio = decode::decode_file(&path).map_err(|e| format!("{}: {e}", track.name))?;
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        decoded.push((track, audio, path, size));
+        decoded.push(decode_project_track(&dir, track)?);
     }
 
     let tracks = decoded
         .into_iter()
-        .map(|(track, audio, path, size)| {
-            let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
-            Ok(OpenedTrack {
-                clip: store.with(id, |entry| clip_info(id, entry))?,
-                gain: track.gain,
-                muted: track.muted,
-                soloed: track.soloed,
-                in_master: track.in_master,
-                offset: start_offset(track.offset_secs),
-                pattern_id: track.pattern_id,
-            })
-        })
+        .map(|loaded| insert_project_track(&store, loaded))
         .collect::<Result<Vec<_>, String>>()?;
 
     Ok(OpenedProject { tracks, patterns })
+}
+
+/// One track of a saved project, as listed before any audio is loaded.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTrackSummary {
+    pub index: usize,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern_id: Option<String>,
+}
+
+/// What a saved project holds, for picking parts of it to bring into this session.
+#[derive(Serialize)]
+pub struct ProjectContents {
+    pub tracks: Vec<ProjectTrackSummary>,
+    pub patterns: Vec<SavedPattern>,
+}
+
+/// Lists a project's tracks and patterns without loading any audio.
+#[tauri::command]
+pub fn project_contents(name: String, workspace: State<Workspace>) -> Result<ProjectContents, String> {
+    let (project, _) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let tracks = project
+        .tracks
+        .into_iter()
+        .enumerate()
+        .map(|(index, track)| ProjectTrackSummary {
+            index,
+            name: track.name,
+            pattern_id: track.pattern_id,
+        })
+        .collect();
+    Ok(ProjectContents { tracks, patterns: project.patterns })
+}
+
+/// Loads one track of a saved project as a new clip, staged as it was saved.
+#[tauri::command(async)]
+pub fn import_project_track(
+    name: String,
+    index: usize,
+    workspace: State<Workspace>,
+    store: State<ClipStore>,
+) -> Result<OpenedTrack, String> {
+    let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let track = project
+        .tracks
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| format!("{name} has no track {}", index + 1))?;
+    insert_project_track(&store, decode_project_track(&dir, track)?)
+}
+
+type LoadedTrack = (ProjectTrack, decode::DecodedAudio, PathBuf, u64);
+
+fn decode_project_track(dir: &Path, track: ProjectTrack) -> Result<LoadedTrack, String> {
+    let path = dir.join(&track.file);
+    let audio = decode::decode_file(&path).map_err(|e| format!("{}: {e}", track.name))?;
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    Ok((track, audio, path, size))
+}
+
+fn insert_project_track(store: &ClipStore, loaded: LoadedTrack) -> Result<OpenedTrack, String> {
+    let (track, audio, path, size) = loaded;
+    let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
+    Ok(OpenedTrack {
+        clip: store.with(id, |entry| clip_info(id, entry))?,
+        gain: track.gain,
+        muted: track.muted,
+        soloed: track.soloed,
+        in_master: track.in_master,
+        offset: start_offset(track.offset_secs),
+        pattern_id: track.pattern_id,
+    })
 }
 
 /// Sets the master bus: gain on the summed mix, and whether to limit it.

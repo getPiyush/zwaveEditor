@@ -11,6 +11,7 @@ import {
   transportPlay,
   transportSeek,
 } from "../lib/api";
+import { gridSeconds } from "../lib/beat";
 import { formatTime } from "../lib/format";
 import { isRunningInTauri } from "../lib/tauri";
 import { useTransport } from "../lib/useTransport";
@@ -21,6 +22,7 @@ import type {
   ClipInfo,
   NewTrackSource,
   OpenedProject,
+  ProjectItem,
   SavedPattern,
   Selection,
   Track,
@@ -61,9 +63,12 @@ interface Props {
   onCopySelection: (selection: Selection) => Promise<number | null>;
   onPaste: (target: Selection, silence: number) => Promise<boolean>;
   onUndoTrack: (clipId: number) => Promise<boolean>;
+  onRenameTrack: (clipId: number, name: string) => void;
   onRecordingComplete: (clip: ClipInfo) => void;
   /** Adds a track starting at `offset`. Returns its clip id, or null if it failed. */
   onNewTrack: (source: NewTrackSource, offset: number) => Promise<number | null>;
+  /** Adds a track or beat from another saved project. Returns its clip id, or null. */
+  onAddFromProject: (item: ProjectItem) => Promise<number | null>;
   isDragging: boolean;
   isImporting: boolean;
   importingName: string | null;
@@ -93,6 +98,7 @@ function sessionSnapshot(tracks: Track[], patterns: SavedPattern[]): string {
     tracks.map((track) => [
       track.clip.id,
       track.clip.version,
+      track.clip.name,
       track.gain,
       track.muted,
       track.soloed,
@@ -122,8 +128,10 @@ export function SessionScreen({
   onCopySelection,
   onPaste,
   onUndoTrack,
+  onRenameTrack,
   onRecordingComplete,
   onNewTrack,
+  onAddFromProject,
   isDragging,
   isImporting,
   importingName,
@@ -144,6 +152,9 @@ export function SessionScreen({
   const [lastEdited, setLastEdited] = useState<number | null>(null);
   // The track last clicked; paste lands here when nothing is selected.
   const [activeClipId, setActiveClipId] = useState<number | null>(null);
+  // Arrow-key selection: the fixed end (where the user clicked) and the end
+  // the arrows move, in clip time. Cleared whenever the timeline is clicked.
+  const arrowSelectRef = useRef<{ clipId: number; anchor: number; edge: number } | null>(null);
   // Length of what is on the clipboard, in seconds, or null if nothing is.
   const [clipboard, setClipboard] = useState<number | null>(null);
   // Blank filler: lets a paste land past a track's end, padding the gap with
@@ -409,6 +420,16 @@ export function SessionScreen({
     [onNewTrack],
   );
 
+  const addFromProject = useCallback(
+    async (item: ProjectItem) => {
+      const clipId = await onAddFromProject(item);
+      if (clipId === null) return;
+      setActiveClipId(clipId);
+      setSelection(null);
+    },
+    [onAddFromProject],
+  );
+
   const handleRepeat = useCallback(
     async (count: number) => {
       if (!selection) return;
@@ -421,6 +442,48 @@ export function SessionScreen({
       }
     },
     [selection, onTrackChange],
+  );
+
+  // ←/→ grow or shrink a selection from the point last clicked on a track:
+  // one grid step in beat mode with snapping on, else 1% of the visible span.
+  // Shift moves ten times as far.
+  const arrowSelect = useCallback(
+    (direction: -1 | 1, big: boolean) => {
+      const track = selectedTrack ?? activeTrack;
+      if (!track) return;
+      const length = track.clip.durationSecs;
+      const clamp = (t: number) => Math.min(Math.max(t, 0), length);
+
+      let state = arrowSelectRef.current;
+      const continuing =
+        state !== null &&
+        state.clipId === track.clip.id &&
+        (selection
+          ? selection.clipId === state.clipId &&
+            Math.abs(selection.start - Math.min(state.anchor, state.edge)) < 1e-9 &&
+            Math.abs(selection.end - Math.max(state.anchor, state.edge)) < 1e-9
+          : state.anchor === state.edge);
+      if (!continuing) {
+        // A dragged selection is extended from its end; otherwise start at the playhead.
+        state = selection
+          ? { clipId: track.clip.id, anchor: selection.start, edge: selection.end }
+          : (() => {
+              const at = clamp(position - track.offset);
+              return { clipId: track.clip.id, anchor: at, edge: at };
+            })();
+      }
+
+      const grid = beat ? gridSeconds(beat.snap, beat.bpm) : null;
+      const step = (grid ?? (view.end - view.start) / 100) * (big ? 10 : 1);
+      const edge = clamp(state!.edge + direction * step);
+      const next = { ...state!, edge };
+      arrowSelectRef.current = next;
+      const start = Math.min(next.anchor, edge);
+      const end = Math.max(next.anchor, edge);
+      setActiveClipId(track.clip.id);
+      setSelection(end > start ? { clipId: track.clip.id, start, end } : null);
+    },
+    [selectedTrack, activeTrack, selection, position, beat, view],
   );
 
   // Keep the playhead on screen while playing, unless the user has scrolled away.
@@ -484,6 +547,11 @@ export function SessionScreen({
         case "0":
           fitAll();
           break;
+        case "ArrowLeft":
+        case "ArrowRight":
+          if (!selectedTrack && !activeTrack) return;
+          arrowSelect(event.key === "ArrowLeft" ? -1 : 1, event.shiftKey);
+          break;
         case "Home":
           seek(0);
           break;
@@ -514,6 +582,8 @@ export function SessionScreen({
     copy,
     paste,
     selection,
+    selectedTrack,
+    arrowSelect,
     clipboard,
     activeTrack,
     state.playing,
@@ -691,6 +761,16 @@ export function SessionScreen({
         </div>
       )}
 
+      {/* Holds the edit bar's place so the timeline never shifts under a drag
+          when a selection appears or clears. */}
+      {tracks.length > 0 && !(selection && selectedTrack) && !(!selection && clipboard !== null && activeTrack) && (
+        <div className="editbar editbar--idle">
+          <span className="editbar__range">
+            Drag across a track to select · or click a point, then ←/→ to select (shift for bigger steps)
+          </span>
+        </div>
+      )}
+
       {tracks.length === 0 ? (
         <EmptySession
           onRecord={() => setShowRecording(true)}
@@ -705,7 +785,10 @@ export function SessionScreen({
         <>
           <div
             className="session__timeline"
-            onPointerDownCapture={() => setFollowPlayhead(false)}
+            onPointerDownCapture={() => {
+              setFollowPlayhead(false);
+              arrowSelectRef.current = null;
+            }}
           >
             <Timeline
               tracks={tracks}
@@ -718,6 +801,7 @@ export function SessionScreen({
               onTrackRemove={setRemovingClipId}
               removingClipId={removingClipId}
               onTrackUndo={(clipId) => void undo(clipId)}
+              onTrackRename={onRenameTrack}
               onHoverTimeChange={setHoverTime}
               selection={selection}
               onSelectionChange={setSelection}
@@ -753,7 +837,7 @@ export function SessionScreen({
           {selection ? formatTime(selection.end - selection.start) : "—"}
         </span>
         <span className="statusbar__hint">
-          drag to select · ⌘/Ctrl + C / X / V copy, cut, paste · ⌘/Ctrl + drag move track · space play/pause · ⌘/Ctrl + scroll zoom · shift + scroll pan
+          drag or click + ←/→ to select · ⌘/Ctrl + C / X / V copy, cut, paste · ⌘/Ctrl + drag move track · space play/pause · ⌘/Ctrl + scroll zoom · shift + scroll pan
         </span>
       </footer>
 
@@ -820,6 +904,9 @@ export function SessionScreen({
           onClipboard={() => addTrack({ kind: "clipboard" })}
           onFile={onAddFiles}
           onTune={(tune) => onOpenPaths([tune.path])}
+          currentProject={projectName}
+          beatMode={!!beat}
+          onProject={addFromProject}
           onClose={() => setShowAddTrack(false)}
         />
       )}

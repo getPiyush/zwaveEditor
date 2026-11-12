@@ -7,6 +7,9 @@ import {
   stopRecordingAsSample,
 } from "../lib/api";
 import {
+  clampBpm,
+  MAX_BPM,
+  MIN_BPM,
   noteName,
   noteRange,
   rowIsTuned,
@@ -23,7 +26,10 @@ import { RecordingDialog } from "./RecordingDialog";
 
 interface Props {
   initial: Pattern;
-  /** The session tempo; the pattern always renders at it. */
+  /**
+   * The session tempo, offered as a one-click choice. The pattern renders at
+   * its own tempo, which starts as `initial.bpm`.
+   */
   bpm: number;
   title: string;
   /** Whether committing adds a new track or replaces the one being edited. */
@@ -50,10 +56,12 @@ function balanceLabel(pan: number): string {
 }
 
 export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, onClose }: Props) {
-  const [pattern, setPattern] = useState<Pattern>(() => ({ ...initial, bpm }));
+  const [pattern, setPattern] = useState<Pattern>(initial);
   const [previewing, setPreviewing] = useState(false);
   // What is typed into the length field, until it is committed.
   const [barsDraft, setBarsDraft] = useState<string | null>(null);
+  // What is typed into the tempo field, until it is committed.
+  const [bpmDraft, setBpmDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The row a take is being recorded for, or NEW_ROW.
@@ -70,11 +78,6 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
     window.addEventListener("pointerup", stop);
     return () => window.removeEventListener("pointerup", stop);
   }, []);
-
-  // The session tempo can change while the dialog is open.
-  useEffect(() => {
-    setPattern((current) => (current.bpm === bpm ? current : { ...current, bpm }));
-  }, [bpm]);
 
   // Keep the preview loop in step with every edit, without restarting it.
   useEffect(() => {
@@ -227,6 +230,15 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
       })),
     }));
 
+  const commitBpm = () => {
+    if (bpmDraft === null) return;
+    const value = Number(bpmDraft);
+    if (bpmDraft.trim() !== "" && Number.isFinite(value)) {
+      setPattern((current) => ({ ...current, bpm: clampBpm(value) }));
+    }
+    setBpmDraft(null);
+  };
+
   const hasHits = pattern.rows.some((row) => !row.muted && row.steps.some(Boolean));
 
   const commit = async () => {
@@ -272,7 +284,36 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
             {previewing ? "■ Stop" : "▶ Preview loop"}
           </button>
 
-          <span className="pattern__tempo">{bpm} BPM</span>
+          <label className="pattern__field">
+            Tempo
+            <input
+              type="number"
+              className="pattern__bpm"
+              min={MIN_BPM}
+              max={MAX_BPM}
+              step={1}
+              value={bpmDraft ?? String(pattern.bpm)}
+              onChange={(event) => setBpmDraft(event.target.value)}
+              onBlur={commitBpm}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") setBpmDraft(null);
+              }}
+              title={`${MIN_BPM} to ${MAX_BPM} BPM`}
+              aria-label="Pattern tempo in beats per minute"
+            />
+            BPM
+          </label>
+          {pattern.bpm !== bpm && (
+            <button
+              type="button"
+              className="btn btn--small pattern__match"
+              onClick={() => setPattern((current) => ({ ...current, bpm }))}
+              title="This pattern's beats won't line up with the session grid at a different tempo"
+            >
+              Use session {bpm} BPM
+            </button>
+          )}
 
           <label className="pattern__field">
             Length

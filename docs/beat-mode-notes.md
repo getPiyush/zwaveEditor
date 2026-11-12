@@ -55,11 +55,13 @@ The mode and the beat settings are remembered between launches (`localStorage` k
    - Drag a row's **⠿** handle to move it, or focus it and press ↑/↓. Timeline tracks have the same handle.
    - Each row has an **L–R** balance slider; double-click to centre it.
    - Length is 1–200 bars (the preview loops at most 8 of them), and swing goes from 0 to 60%.
+   - **Tempo** is per pattern (40–220 BPM). A new pattern starts at the session tempo, and a kept one opens at its own. When they differ, **Use session N BPM** matches it to the grid. **Update track** re-renders every linked track at the new tempo.
    - **Preview loop** plays the pattern on its own while you edit it.
    - **Add to session** renders it to a normal track at the start of the current bar.
    - Tails wrap round to the start, so the clip loops seamlessly with Repeat or paste.
    - The **▦** button on a pattern track reopens its grid. **Update track** changes the pattern and every track made from it.
    - Every pattern added is kept in the project and saved with it, even after its tracks are removed. The **Patterns** menu in the toolbar reopens any of them; **Add to session** places it again, and a changed grid is kept as a new pattern.
+   - **Add Track → From another project** brings in one track (its audio as saved, edits included) or one beat (rendered fresh at its own tempo, and editable here) from any saved project. It lands at the start of the playhead's bar. A pattern track keeps its link: its pattern comes too, reusing an identical one already in the session, and is renamed with the project's name if its name is taken. **Preview** plays the chosen track, or loops the chosen beat, before you add it.
 
 The default pattern is a boom-bap starter at 90 BPM: kick on steps 1, 8 and 11, an 808 on 1 and 11, snare on 2 and 4, eighth-note hats, and 20% swing.
 
@@ -137,6 +139,8 @@ npm run tauri dev
 - [ ] Turn **Master** up past 0 dB with the **Limiter** on. It should get louder without harsh clipping. Turn the limiter off and compare.
 - [ ] **Export → master mix** in Beat mode. The file should match what you heard, limiter included.
 - [ ] Use ▦ on a pattern track to edit it and **Update track**.
+- [ ] Change a pattern's **Tempo** in the editor and **Update track**. The track should get shorter or longer and its name should show the new BPM.
+- [ ] **Add Track → From another project**: add a plain track and a beat from another saved project. Check they land at the playhead's bar, the beat shows in **Patterns**, and ▦ reopens it. **Preview** both first; picking something else should stop the preview.
 - [ ] Quick tunes still work, including auditioning a tune while the pattern preview loops.
 - [ ] Save and open a project (see the known gap below).
 

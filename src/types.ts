@@ -49,6 +49,14 @@ export interface Selection {
 
 export type BitDepth = "int16" | "int24" | "float32";
 
+/** What an export is written as. Mirrors `ExportFormat` on the Rust side. */
+export type ExportFormat =
+  | { kind: "wav"; bitDepth: BitDepth }
+  | { kind: "flac"; bitDepth: BitDepth }
+  | { kind: "mp3"; kbps: number }
+  | { kind: "aac"; kbps: number }
+  | { kind: "ogg"; quality: number };
+
 export interface TransportState {
   playing: boolean;
   positionSecs: number;
@@ -188,6 +196,24 @@ export interface SavedPattern {
   name: string;
   pattern: Pattern;
 }
+
+/** One track of a saved project, listed before its audio is loaded. */
+export interface ProjectTrackSummary {
+  index: number;
+  name: string;
+  patternId?: string;
+}
+
+/** What a saved project holds, for bringing parts of it into this session. */
+export interface ProjectContents {
+  tracks: ProjectTrackSummary[];
+  patterns: SavedPattern[];
+}
+
+/** One thing taken from another project: a track's audio, or a beat to render. */
+export type ProjectItem =
+  | { kind: "track"; project: string; track: ProjectTrackSummary; pattern?: SavedPattern }
+  | { kind: "beat"; project: string; pattern: SavedPattern };
 
 /** What opening a project hands back, ready to replace the session. */
 export interface OpenedProject {

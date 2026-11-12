@@ -7,6 +7,7 @@ import {
   cropRange,
   deleteRange,
   importAudio,
+  importProjectTrack,
   insertAudioFile,
   isSupportedFile,
   newBlankClip,
@@ -20,6 +21,7 @@ import {
   takeStartupFiles,
   transportState,
   undoEdit,
+  renameClip,
 } from "./lib/api";
 import {
   defaultPattern,
@@ -42,6 +44,7 @@ import type {
   NewTrackSource,
   OpenedProject,
   Pattern,
+  ProjectItem,
   SavedPattern,
   Selection,
   Track,
@@ -207,6 +210,18 @@ export default function App() {
     [replaceClip],
   );
 
+  const renameTrack = useCallback(
+    async (clipId: number, name: string) => {
+      try {
+        replaceClip(await renameClip(clipId, name));
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [replaceClip],
+  );
+
   /** Joins a whole file onto a track, before or after what is there. */
   const insertFile = useCallback(
     async (clipId: number, path: string, atEnd: boolean) => {
@@ -286,6 +301,10 @@ export default function App() {
     setPatternEditor({ pattern: defaultPattern(beat.bpm), patternId: null, updating: false });
   }, [beat.bpm]);
 
+  const bpmRef = useRef(beat.bpm);
+  bpmRef.current = beat.bpm;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const tracksRef = useRef(tracks);
   tracksRef.current = tracks;
   const patternsRef = useRef(patterns);
@@ -338,10 +357,10 @@ export default function App() {
 
     if (entry !== saved) setPatterns((current) => [...current, entry]);
 
-    // New patterns land at the start of the bar the playhead is in.
+    // New patterns land at the start of the session-grid bar the playhead is in.
     let offset = 0;
     try {
-      offset = floorToBar((await transportState()).positionSecs, pattern.bpm);
+      offset = floorToBar((await transportState()).positionSecs, bpmRef.current);
     } catch {
       /* No engine; start of the session. */
     }
@@ -350,6 +369,63 @@ export default function App() {
       { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset, patternId: entry.id },
     ]);
   }, []);
+
+  /**
+   * Makes a pattern from another project one of this session's. An identical
+   * one already here is reused; otherwise it gets a fresh id, and the project's
+   * name if its own is taken.
+   */
+  const adoptPattern = useCallback((saved: SavedPattern, project: string): SavedPattern => {
+    const existing = patternsRef.current.find((p) => samePattern(p.pattern, saved.pattern));
+    if (existing) return existing;
+    const taken = new Set(patternsRef.current.map((p) => p.name));
+    let name = taken.has(saved.name) ? `${saved.name} (${project})` : saved.name;
+    for (let n = 2; taken.has(name); n++) name = `${saved.name} (${project} ${n})`;
+    const entry = { id: newPatternId(), name, pattern: saved.pattern };
+    patternsRef.current = [...patternsRef.current, entry];
+    setPatterns((current) => [...current, entry]);
+    return entry;
+  }, []);
+
+  /**
+   * Adds a track or a beat from another saved project, at the playhead (the
+   * start of its bar in Beat mode). Returns the new clip's id, or null.
+   */
+  const addFromProject = useCallback(
+    async (item: ProjectItem): Promise<number | null> => {
+      try {
+        let offset = 0;
+        try {
+          const at = (await transportState()).positionSecs;
+          offset = modeRef.current === "beat" ? floorToBar(at, bpmRef.current) : at;
+        } catch {
+          /* No engine; start of the session. */
+        }
+
+        let track: Track;
+        if (item.kind === "track") {
+          const loaded = await importProjectTrack(item.project, item.track.index);
+          const entry = item.pattern && adoptPattern(item.pattern, item.project);
+          // A solo carried over would silence the rest of this session.
+          track = { ...loaded, soloed: false, offset, patternId: entry?.id };
+        } else {
+          const entry = adoptPattern(item.pattern, item.project);
+          const clip = await renderPattern(
+            entry.pattern,
+            `${entry.name} · ${entry.pattern.bpm} BPM`,
+          );
+          track = { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset, patternId: entry.id };
+        }
+        setTracks((current) => [...current, track]);
+        setError(null);
+        return track.clip.id;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+    },
+    [adoptPattern],
+  );
 
   const openedPattern = patterns.find((p) => p.id === patternEditor?.patternId);
   const linkedTracks = openedPattern ? tracks.filter((t) => t.patternId === openedPattern.id) : [];
@@ -430,8 +506,10 @@ export default function App() {
       onCopySelection={copySelection}
       onPaste={pasteInto}
       onUndoTrack={undoTrack}
+      onRenameTrack={renameTrack}
       onRecordingComplete={addRecording}
       onNewTrack={addNewTrack}
+      onAddFromProject={addFromProject}
       isDragging={isDragging}
       isImporting={importing !== null}
       importingName={importing}

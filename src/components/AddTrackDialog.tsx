@@ -1,8 +1,25 @@
 import { useEffect, useState } from "react";
 
-import { listTunes, previewPause, previewPlay, previewState } from "../lib/api";
+import {
+  listProjects,
+  listTunes,
+  previewPause,
+  previewPlay,
+  previewPattern,
+  previewProjectTrack,
+  previewState,
+  projectContents,
+  projectPreviewKey,
+  stopPatternPreview,
+} from "../lib/api";
 import { formatTime } from "../lib/format";
-import type { PreviewState, TuneInfo } from "../types";
+import type {
+  PreviewState,
+  ProjectContents,
+  ProjectItem,
+  ProjectSummary,
+  TuneInfo,
+} from "../types";
 
 const POLL_MS = 200;
 
@@ -18,6 +35,11 @@ interface Props {
   onClipboard: () => Promise<void>;
   onFile: () => void;
   onTune: (tune: TuneInfo) => void;
+  /** The project this session was opened from or saved as, if any. */
+  currentProject: string | null;
+  /** Beats (patterns) can only be rendered and edited in Beat mode. */
+  beatMode: boolean;
+  onProject: (item: ProjectItem) => Promise<void>;
   onClose: () => void;
 }
 
@@ -30,6 +52,9 @@ export function AddTrackDialog({
   onClipboard,
   onFile,
   onTune,
+  currentProject,
+  beatMode,
+  onProject,
   onClose,
 }: Props) {
   const [secondsDraft, setSecondsDraft] = useState(defaultSeconds.toFixed(1));
@@ -50,9 +75,131 @@ export function AddTrackDialog({
       .catch(() => setTunes([]));
   }, []);
 
+  // Null until the saved projects have been listed.
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [contents, setContents] = useState<ProjectContents | null>(null);
+  const [contentsError, setContentsError] = useState<string | null>(null);
+  // "track:<index>" or "beat:<pattern id>".
+  const [itemKey, setItemKey] = useState("");
+
+  useEffect(() => {
+    listProjects()
+      .then((found) => {
+        setProjects(found);
+        // Another project is the likelier source than this one.
+        const first = found.find((p) => p.name !== currentProject) ?? found[0];
+        if (first) setProjectName(first.name);
+      })
+      .catch(() => setProjects([]));
+    // Only the projects there were when the dialog opened.
+  }, []);
+
+  useEffect(() => {
+    if (!projectName) return;
+    let active = true;
+    setContents(null);
+    setContentsError(null);
+    setItemKey("");
+    projectContents(projectName)
+      .then((found) => {
+        if (!active) return;
+        setContents(found);
+        const first = found.tracks[0]
+          ? `track:${found.tracks[0].index}`
+          : beatMode && found.patterns[0]
+            ? `beat:${found.patterns[0].id}`
+            : "";
+        setItemKey(first);
+      })
+      .catch((err) => active && setContentsError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      active = false;
+    };
+  }, [projectName, beatMode]);
+
+  const projectItem = (): ProjectItem | null => {
+    if (!contents) return null;
+    const split = itemKey.indexOf(":");
+    const kind = itemKey.slice(0, split);
+    const id = itemKey.slice(split + 1);
+    if (kind === "track") {
+      const track = contents.tracks.find((t) => String(t.index) === id);
+      if (!track) return null;
+      const pattern = contents.patterns.find((p) => p.id === track.patternId);
+      return { kind: "track", project: projectName, track, pattern };
+    }
+    const pattern = contents.patterns.find((p) => p.id === id);
+    return kind === "beat" && pattern ? { kind: "beat", project: projectName, pattern } : null;
+  };
+  const selectedItem = projectItem();
+
+  // The beat whose loop is playing, if any. Tracks use the preview player below.
+  const [beatPreviewId, setBeatPreviewId] = useState<string | null>(null);
+  const [itemPreviewLoading, setItemPreviewLoading] = useState(false);
+  const [itemPreviewError, setItemPreviewError] = useState<string | null>(null);
+
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewing = !!tune && preview?.name === tune.name && preview.playing;
+  const trackKey =
+    selectedItem?.kind === "track" ? projectPreviewKey(projectName, selectedItem.track.index) : null;
+  const itemPreviewing =
+    selectedItem?.kind === "beat"
+      ? beatPreviewId === selectedItem.pattern.id
+      : !!trackKey && preview?.name === trackKey && preview.playing;
+  const projectTrackPlaying = !!preview?.playing && !!preview.name?.startsWith("project/");
+
+  // Choosing something else stops what was being previewed from the project.
+  useEffect(() => {
+    setItemPreviewError(null);
+    if (beatPreviewId !== null) {
+      void stopPatternPreview().catch(() => {});
+      setBeatPreviewId(null);
+    }
+    if (projectTrackPlaying) {
+      previewPause().catch(() => {});
+      setPreview((current) => current && { ...current, playing: false });
+    }
+    // Only on a change of selection, not of what is playing.
+  }, [projectName, itemKey]);
+
+  // The beat loop, like the preview player, stops with the dialog.
+  useEffect(() => () => void stopPatternPreview().catch(() => {}), []);
+
+  const toggleItemPreview = async () => {
+    if (!selectedItem) return;
+    setItemPreviewError(null);
+    try {
+      if (itemPreviewing) {
+        if (selectedItem.kind === "beat") {
+          await stopPatternPreview();
+          setBeatPreviewId(null);
+        } else {
+          await previewPause();
+          setPreview((current) => current && { ...current, playing: false });
+        }
+        return;
+      }
+      setItemPreviewLoading(true);
+      if (selectedItem.kind === "beat") {
+        // One thing at a time: silence the preview player first.
+        await previewPause();
+        setPreview((current) => current && { ...current, playing: false });
+        await previewPattern(selectedItem.pattern.pattern);
+        setBeatPreviewId(selectedItem.pattern.id);
+      } else {
+        await stopPatternPreview();
+        setBeatPreviewId(null);
+        await previewProjectTrack(projectName, selectedItem.track.index);
+        setPreview(await previewState());
+      }
+    } catch (err) {
+      setItemPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setItemPreviewLoading(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -83,6 +230,10 @@ export function AddTrackDialog({
         return;
       }
       setPreviewLoading(true);
+      if (beatPreviewId !== null) {
+        await stopPatternPreview();
+        setBeatPreviewId(null);
+      }
       await previewPlay(tune.name);
       setPreview(await previewState());
     } catch {
@@ -208,6 +359,108 @@ export function AddTrackDialog({
                 disabled={processing || isImporting || !tune}
               >
                 Add tune
+              </button>
+            </section>
+
+            <section className="add-track__option">
+              <div>
+                <h3>From another project</h3>
+                {projects === null ? (
+                  <p>Reading projects…</p>
+                ) : projects.length === 0 ? (
+                  <p>No saved projects yet.</p>
+                ) : (
+                  <>
+                    <p>
+                      {beatMode
+                        ? "A track comes as it was saved; a beat is rendered fresh at its own tempo and can be edited here."
+                        : "A track comes as it was saved, edits and all."}{" "}
+                      It starts at the playhead.
+                    </p>
+                    <div className="add-track__tune-row add-track__project-row">
+                      <select
+                        className="add-track__tune"
+                        value={projectName}
+                        onChange={(e) => setProjectName(e.target.value)}
+                        disabled={processing}
+                        aria-label="Project"
+                      >
+                        {projects.map((p) => (
+                          <option key={p.name} value={p.name}>
+                            {p.name}
+                            {p.name === currentProject ? " (this project, as saved)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      {contentsError ? (
+                        <span className="add-track__error">{contentsError}</span>
+                      ) : contents === null ? (
+                        <span className="add-track__time">Reading…</span>
+                      ) : contents.tracks.length === 0 && (!beatMode || contents.patterns.length === 0) ? (
+                        <span className="add-track__time">Nothing to add</span>
+                      ) : (
+                        <select
+                          className="add-track__tune"
+                          value={itemKey}
+                          onChange={(e) => setItemKey(e.target.value)}
+                          disabled={processing}
+                          aria-label="Track or beat"
+                        >
+                          {contents.tracks.length > 0 && (
+                            <optgroup label="Tracks">
+                              {contents.tracks.map((t) => (
+                                <option key={t.index} value={`track:${t.index}`}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {beatMode && contents.patterns.length > 0 && (
+                            <optgroup label="Beats">
+                              {contents.patterns.map((p) => (
+                                <option key={p.id} value={`beat:${p.id}`}>
+                                  {p.name} · {p.pattern.bpm} BPM
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </select>
+                      )}
+                      {selectedItem && (
+                        <button
+                          type="button"
+                          className="btn btn--small"
+                          onClick={() => void toggleItemPreview()}
+                          disabled={processing || itemPreviewLoading}
+                          title={
+                            itemPreviewing
+                              ? "Stop the preview"
+                              : selectedItem.kind === "beat"
+                                ? "Loop this beat before adding it"
+                                : "Hear this track before adding it"
+                          }
+                        >
+                          {itemPreviewLoading ? "…" : itemPreviewing ? "Stop" : "Preview"}
+                        </button>
+                      )}
+                      {itemPreviewing && selectedItem?.kind === "track" && preview && (
+                        <span className="add-track__time">
+                          {formatTime(preview.positionSecs)} / {formatTime(preview.durationSecs)}
+                        </span>
+                      )}
+                    </div>
+                    {itemPreviewError && <p className="add-track__error">{itemPreviewError}</p>}
+                  </>
+                )}
+              </div>
+              <button
+                className="btn btn--primary"
+                onClick={() => {
+                  if (selectedItem) void run(() => onProject(selectedItem));
+                }}
+                disabled={processing || isImporting || !selectedItem}
+              >
+                {processing && selectedItem ? "Adding…" : "Add from project"}
               </button>
             </section>
 

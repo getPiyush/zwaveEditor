@@ -8,10 +8,13 @@ interface Props {
   track: Track;
   colors: { peak: string; rms: string };
   index: number;
+  /** Shows only the swatch, number and mute/solo, in a narrow strip. */
+  collapsed: boolean;
   dragHandle: HTMLAttributes<HTMLElement>;
   onChange: (changes: Partial<Track>) => void;
   onRemove: () => void;
   onUndo: () => void;
+  onRename: (name: string) => void;
   /** Beat mode, for tracks made in the pattern editor. */
   onEditPattern?: () => void;
 }
@@ -20,10 +23,12 @@ export function TrackHeader({
   track,
   colors,
   index,
+  collapsed,
   dragHandle,
   onChange,
   onRemove,
   onUndo,
+  onRename,
   onEditPattern,
 }: Props) {
   const { clip } = track;
@@ -38,6 +43,57 @@ export function TrackHeader({
     }
     setOffsetDraft(null);
   };
+
+  // What is typed into the name field while renaming; null when not renaming.
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+
+  const commitName = () => {
+    if (nameDraft === null) return;
+    const name = nameDraft.trim();
+    if (name !== "" && name !== clip.name) onRename(name);
+    setNameDraft(null);
+  };
+
+  const muteSolo = (
+    <>
+      <button
+        type="button"
+        className={`toggle${track.muted ? " toggle--on toggle--mute" : ""}`}
+        onClick={() => onChange({ muted: !track.muted })}
+        title="Mute"
+        aria-pressed={track.muted}
+      >
+        M
+      </button>
+      <button
+        type="button"
+        className={`toggle${track.soloed ? " toggle--on toggle--solo" : ""}`}
+        onClick={() => onChange({ soloed: !track.soloed })}
+        title="Solo"
+        aria-pressed={track.soloed}
+      >
+        S
+      </button>
+    </>
+  );
+
+  if (collapsed) {
+    return (
+      <div className="track__header track__header--collapsed" title={clip.name}>
+        <button
+          type="button"
+          className="drag-handle track__number"
+          title={`${index + 1}. ${clip.name} — drag to rearrange, or use ↑/↓`}
+          aria-label={`Move ${clip.name}`}
+          style={{ color: colors.peak }}
+          {...dragHandle}
+        >
+          {index + 1}
+        </button>
+        {muteSolo}
+      </div>
+    );
+  }
 
   return (
     <div className="track__header">
@@ -60,9 +116,42 @@ export function TrackHeader({
           aria-label={`Include ${clip.name} in the master`}
         />
         <span className="track__swatch" style={{ background: colors.peak }} />
-        <span className="track__name" title={clip.path}>
-          {index + 1}. {clip.name}
-        </span>
+        {nameDraft !== null ? (
+          <input
+            type="text"
+            className="track__name-input"
+            value={nameDraft}
+            autoFocus
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => setNameDraft(event.target.value)}
+            onBlur={commitName}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") setNameDraft(null);
+            }}
+            aria-label={`New name for ${clip.name}`}
+          />
+        ) : (
+          <>
+            <span
+              className="track__name"
+              title={`${clip.path} — double-click to rename`}
+              onDoubleClick={() => setNameDraft(clip.name)}
+            >
+              {index + 1}. {clip.name}
+            </span>
+            <button
+              type="button"
+              className="track__icon track__rename"
+              onClick={() => setNameDraft(clip.name)}
+              title="Rename this track"
+              aria-label={`Rename ${clip.name}`}
+            >
+              ✎
+            </button>
+          </>
+        )}
         {onEditPattern && (
           <button
             type="button"
@@ -101,24 +190,7 @@ export function TrackHeader({
       </p>
 
       <div className="track__controls">
-        <button
-          type="button"
-          className={`toggle${track.muted ? " toggle--on toggle--mute" : ""}`}
-          onClick={() => onChange({ muted: !track.muted })}
-          title="Mute"
-          aria-pressed={track.muted}
-        >
-          M
-        </button>
-        <button
-          type="button"
-          className={`toggle${track.soloed ? " toggle--on toggle--solo" : ""}`}
-          onClick={() => onChange({ soloed: !track.soloed })}
-          title="Solo"
-          aria-pressed={track.soloed}
-        >
-          S
-        </button>
+        {muteSolo}
         <input
           type="range"
           className="track__gain"

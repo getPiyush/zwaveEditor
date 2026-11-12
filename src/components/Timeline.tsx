@@ -18,8 +18,46 @@ import type { BeatSettings, Selection, Track, TuneDrop, ViewRange } from "../typ
 import { TrackHeader } from "./TrackHeader";
 import { TrackWaveform } from "./TrackWaveform";
 
-/** Width of the track-header column. Shared with the CSS through a variable. */
+/** Default width of the track-header column. Shared with the CSS through a variable. */
 const GUTTER = 228;
+/** The range the header column can be dragged to while expanded. */
+const MIN_GUTTER = 170;
+const MAX_GUTTER = 520;
+/** Width of the header column when it is collapsed to a narrow strip. */
+const COLLAPSED_GUTTER = 40;
+/** Dragging the edge narrower than this collapses the column, as in VS Code. */
+const COLLAPSE_SNAP = 110;
+const COLLAPSED_KEY = "timeline.headersCollapsed";
+const WIDTH_KEY = "timeline.headerWidth";
+
+function clampGutter(width: number): number {
+  return Math.round(Math.min(Math.max(width, MIN_GUTTER), MAX_GUTTER));
+}
+
+function loadSetting(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function saveSetting(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* Storage unavailable; the choice just is not remembered. */
+  }
+}
+
+function loadCollapsed(): boolean {
+  return loadSetting(COLLAPSED_KEY) === "1";
+}
+
+function loadHeaderWidth(): number {
+  const stored = Number(loadSetting(WIDTH_KEY));
+  return Number.isFinite(stored) && stored > 0 ? clampGutter(stored) : GUTTER;
+}
 const RULER_HEIGHT = 26;
 const TRACK_HEIGHT = 104;
 
@@ -35,6 +73,7 @@ interface Props {
   /** The track waiting on the delete confirmation, shown highlighted. */
   removingClipId: number | null;
   onTrackUndo: (clipId: number) => void;
+  onTrackRename: (clipId: number, name: string) => void;
   onHoverTimeChange: (seconds: number | null) => void;
   selection: Selection | null;
   onSelectionChange: (selection: Selection | null) => void;
@@ -64,6 +103,7 @@ export function Timeline({
   onTrackRemove,
   removingClipId,
   onTrackUndo,
+  onTrackRename,
   onHoverTimeChange,
   selection,
   onSelectionChange,
@@ -83,7 +123,64 @@ export function Timeline({
   const [rootHeight, setRootHeight] = useState(0);
   const [hoverX, setHoverX] = useState<number | null>(null);
 
-  const laneWidth = Math.max(0, rootWidth - GUTTER);
+  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const [headerWidth, setHeaderWidth] = useState(loadHeaderWidth);
+  const [resizing, setResizing] = useState(false);
+  const toggleCollapsed = () => {
+    setCollapsed((current) => {
+      saveSetting(COLLAPSED_KEY, current ? "0" : "1");
+      return !current;
+    });
+  };
+  const gutter = collapsed ? COLLAPSED_GUTTER : headerWidth;
+
+  // Dragging the column's right edge resizes it; past the snap point it collapses.
+  const handleResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const root = rootRef.current;
+    if (!root) return;
+    const left = root.getBoundingClientRect().left;
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    setResizing(true);
+
+    let nextCollapsed = collapsed;
+    let nextWidth = headerWidth;
+    const onMove = (move: PointerEvent) => {
+      const width = move.clientX - left;
+      // Leave the lanes some room on narrow windows.
+      const roomy = Math.min(width, Math.max(MIN_GUTTER, root.clientWidth - 120));
+      nextCollapsed = width < COLLAPSE_SNAP;
+      if (!nextCollapsed) nextWidth = clampGutter(roomy);
+      setCollapsed(nextCollapsed);
+      setHeaderWidth(nextWidth);
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      setResizing(false);
+      saveSetting(COLLAPSED_KEY, nextCollapsed ? "1" : "0");
+      saveSetting(WIDTH_KEY, String(nextWidth));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  };
+
+  // Double-clicking the edge puts the column back to its default width.
+  const resetHeaderWidth = () => {
+    setCollapsed(false);
+    setHeaderWidth(GUTTER);
+    saveSetting(COLLAPSED_KEY, "0");
+    saveSetting(WIDTH_KEY, String(GUTTER));
+  };
+  const gutterRef = useRef(gutter);
+  gutterRef.current = gutter;
+
+  const laneWidth = Math.max(0, rootWidth - gutter);
 
   // The wheel listener is attached once, so current state comes from refs.
   const viewRef = useRef(view);
@@ -151,7 +248,7 @@ export function Timeline({
     const width = laneWidthRef.current;
     if (!element || width <= 0) return 0;
     const rect = element.getBoundingClientRect();
-    const x = Math.min(Math.max(clientX - rect.left - GUTTER, 0), width);
+    const x = Math.min(Math.max(clientX - rect.left - gutterRef.current, 0), width);
     return xToTime(x, viewRef.current, width);
   }, []);
 
@@ -165,13 +262,13 @@ export function Timeline({
       const width = laneWidthRef.current;
       if (width <= 0) return;
       const rect = element.getBoundingClientRect();
-      if (event.clientX - rect.left < GUTTER) return;
+      if (event.clientX - rect.left < gutterRef.current) return;
 
       const current = viewRef.current;
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         const ratio = Math.min(
-          Math.max((event.clientX - rect.left - GUTTER) / width, 0),
+          Math.max((event.clientX - rect.left - gutterRef.current) / width, 0),
           1,
         );
         onViewChange(zoomView(current, Math.exp(event.deltaY * 0.005), ratio, durationRef.current));
@@ -197,8 +294,11 @@ export function Timeline({
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    if (event.button !== 0 || event.clientX - rect.left < GUTTER) return;
+    if (event.button !== 0 || event.clientX - rect.left < gutter) return;
     const element = event.currentTarget;
+    // Stop the browser starting a text selection, whose autoscroll would
+    // scroll the track list (or the page) under the drag.
+    event.preventDefault();
     element.setPointerCapture(event.pointerId);
 
     // Alt-drag slides the view; a plain drag selects; a click without a drag seeks.
@@ -277,7 +377,7 @@ export function Timeline({
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left - GUTTER;
+    const x = event.clientX - rect.left - gutter;
     if (x < 0 || x > laneWidth) {
       setHoverX(null);
       onHoverTimeChange(null);
@@ -299,14 +399,27 @@ export function Timeline({
   return (
     <div
       ref={rootRef}
-      className="timeline"
-      style={{ ["--gutter" as string]: `${GUTTER}px` }}
+      className={`timeline${collapsed ? " timeline--collapsed" : ""}${
+        resizing ? " timeline--resizing" : ""
+      }`}
+      style={{ ["--gutter" as string]: `${gutter}px` }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
     >
       <div className="timeline__ruler-row">
-        <div className="timeline__gutter-cell" />
+        <div className="timeline__gutter-cell">
+          <button
+            type="button"
+            className="timeline__collapse"
+            onClick={toggleCollapsed}
+            title={collapsed ? "Expand the track headers" : "Collapse the track headers"}
+            aria-label={collapsed ? "Expand the track headers" : "Collapse the track headers"}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? "»" : "«"}
+          </button>
+        </div>
         <canvas ref={rulerRef} className="timeline__ruler" style={{ height: RULER_HEIGHT }} />
       </div>
 
@@ -326,10 +439,12 @@ export function Timeline({
                 track={track}
                 colors={colors}
                 index={index}
+                collapsed={collapsed}
                 dragHandle={reorder.handleProps(index)}
                 onChange={(changes) => onTrackChange(track.clip.id, changes)}
                 onRemove={() => onTrackRemove(track.clip.id)}
                 onUndo={() => onTrackUndo(track.clip.id)}
+                onRename={(name) => onTrackRename(track.clip.id, name)}
                 onEditPattern={
                   onTrackEditPattern && track.patternId
                     ? () => onTrackEditPattern(track.clip.id)
@@ -403,6 +518,17 @@ export function Timeline({
           </div>
         )}
       </div>
+
+      <div
+        className="timeline__resize"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the track headers"
+        title="Drag to resize, double-click to reset"
+        onPointerDown={handleResizeStart}
+        onPointerMove={(event) => event.stopPropagation()}
+        onDoubleClick={resetHeaderWidth}
+      />
     </div>
   );
 }

@@ -1,12 +1,14 @@
 pub mod decode;
 pub mod edit;
 pub mod engine;
+pub mod encode;
 pub mod export;
 pub mod master;
 pub mod pattern;
 pub mod peaks;
 pub mod recording;
 pub mod synth;
+pub mod voice;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,6 +72,16 @@ impl ClipStore {
 
     pub fn remove(&self, id: u64) {
         self.clips.lock().unwrap().remove(&id);
+    }
+
+    /// Renames a clip. The name is what the track shows and what a project saves.
+    pub fn rename<T>(&self, id: u64, name: String, then: impl FnOnce(&ClipEntry) -> T) -> Result<T, String> {
+        let mut clips = self.clips.lock().unwrap();
+        let entry = clips
+            .get_mut(&id)
+            .ok_or_else(|| format!("clip {id} is not open"))?;
+        entry.name = name;
+        Ok(then(entry))
     }
 
     pub fn audio(&self, id: u64) -> Option<Arc<DecodedAudio>> {
