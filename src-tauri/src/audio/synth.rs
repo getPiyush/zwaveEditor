@@ -554,13 +554,13 @@ fn reed(freq: f32, rate: f32, reed: Reed) -> Vec<f32> {
     let mut air = Biquad::bandpass(reed.formant, 1.0, rate);
     let nyquist = rate * 0.45;
     let harmonics: Vec<(f32, f32)> = (1..=16)
-        .filter_map(|n| {
-            let n = n as f32;
+        .filter_map(|k: u32| {
+            let n = k as f32;
             let f = freq * n;
             if f >= nyquist {
                 return None;
             }
-            let even = n as u32 % 2 == 0;
+            let even = k.is_multiple_of(2);
             let base = if reed.odd_only && even { 0.05 } else { 1.0 } / n.sqrt();
             // Bell-shaped boost around the formant, on a log-frequency scale.
             let octaves = (f / reed.formant).log2();
