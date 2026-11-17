@@ -41,6 +41,12 @@ npm run tauri dev -- -- track-one.wav track-two.mp3
   but are left out of both playback and export.
 - **Editing** — drag across a track to select a range, then delete it or crop
   the track down to it.
+- **Voice enhancement** — in the Adjust dialog, *Enhance voice* cleans up a
+  selected recording in one undoable step: it removes rumble below 80 Hz, reduces
+  background noise (learned from the quiet gaps, so there's no noise sample to
+  pick), softens harsh s sounds, adds presence, then evens out the level and
+  brings it up to -1 dBFS. Each of those is also available on its own, and noise
+  reduction has a strength slider.
 - **Copy and paste** — copy or cut a selection, then paste it over another
   selection or, with nothing selected, at the playhead on the track you last
   clicked. Audio pasted from a different file is converted to that track's
@@ -83,11 +89,12 @@ Beat mode adds:
 - **Tempo and grid** — set the BPM; the ruler counts bars instead of seconds, and bar/beat lines are drawn across every lane. The toolbar shows the playhead as `bar.beat.sixteenth`.
 - **Snap** — bar, beat, 1/8 or 1/16 (or off). Clicking to seek, drag-selecting and ⌘/Ctrl-dragging a track all land on the grid.
 - **Master bus** — a master volume and a brickwall limiter on the summed mix, applied identically in playback and in the master export, so a dense session no longer clips.
-- **Pattern maker** — a 16-step grid of built-in synthesised voices (kick, 808, snare, clap, hat, open hat, chime), each row with its own volume, note (808 and chime), choke and mute. Any row can load a sample file instead. Set the length in bars and the swing, audition it with **Preview loop** (edits are heard live), then **Add to session**: it is rendered to an ordinary clip at the start of the bar the playhead is in. Sounds that ring past the end wrap round to the start, so the clip loops seamlessly with Repeat or paste. The ▦ button on a pattern track reopens its grid. With no tracks open, **Start a beat** goes straight to the grid.
+- **Pattern maker** — a 16-step grid of built-in synthesised voices (kick, 808, snare, clap, hat, open hat, chime), each row with its own volume, note (808 and chime), choke and mute. Any row can load a sample file instead. Set the length in bars, the swing and the pattern's own tempo (it starts at the session tempo; **Use session N BPM** puts it back on the grid), audition it with **Preview loop** (edits are heard live), then **Add to session**: it is rendered to an ordinary clip at the start of the bar the playhead is in. Sounds that ring past the end wrap round to the start, so the clip loops seamlessly with Repeat or paste. The ▦ button on a pattern track reopens its grid. With no tracks open, **Start a beat** goes straight to the grid.
 - **Recorded sounds** — **● Record sound** in the pattern editor (or *Record sound…* in a row's sound menu) records from the microphone and makes the take that row's sound. The silence around it is trimmed so it lands on the step, and the file is kept in `samples/` in the workspace.
 - **Arranging rows** — drag a row's ⠿ handle in the pattern editor to move it, or focus it and press ↑/↓.
 - **Left/right balance** — each row has an L–R slider, so one sound can sit to one side while the rest stay centred. Double-click to centre it.
 - **Project patterns** — every pattern added to a session is kept in the project and saved with it, even after its tracks are removed. The **Patterns** menu in the toolbar reopens any of them: **Add to session** places it again, and if you changed the grid the result is kept as a new pattern, leaving the original as it was. ▦ on a track updates its pattern and every track made from it.
+- **From another project** — *Add Track* can bring in a single track or beat from any saved project. A track comes as it was saved; a beat is rendered at its own tempo and joins this project's patterns, so it can be edited here.
 
 The voices are generated in `audio/synth.rs` — no sample files ship with the app, so there is nothing to license.
 

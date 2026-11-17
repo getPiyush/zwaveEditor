@@ -7,8 +7,18 @@ import {
   stopRecordingAsSample,
 } from "../lib/api";
 import {
+  clampBpm,
+  formatLength,
+  longestPlayingBars,
+  longestRowBars,
+  MAX_BPM,
+  MIN_BPM,
   noteName,
   noteRange,
+  parseLength,
+  resizeRow,
+  ROW_BAR_OPTIONS,
+  rowBars,
   rowIsTuned,
   STEPS_PER_BAR,
   stepNote,
@@ -23,7 +33,10 @@ import { RecordingDialog } from "./RecordingDialog";
 
 interface Props {
   initial: Pattern;
-  /** The session tempo; the pattern always renders at it. */
+  /**
+   * The session tempo, offered as a one-click choice. The pattern renders at
+   * its own tempo, which starts as `initial.bpm`.
+   */
   bpm: number;
   title: string;
   /** Whether committing adds a new track or replaces the one being edited. */
@@ -50,10 +63,12 @@ function balanceLabel(pan: number): string {
 }
 
 export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, onClose }: Props) {
-  const [pattern, setPattern] = useState<Pattern>(() => ({ ...initial, bpm }));
+  const [pattern, setPattern] = useState<Pattern>(initial);
   const [previewing, setPreviewing] = useState(false);
   // What is typed into the length field, until it is committed.
   const [barsDraft, setBarsDraft] = useState<string | null>(null);
+  // What is typed into the tempo field, until it is committed.
+  const [bpmDraft, setBpmDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The row a take is being recorded for, or NEW_ROW.
@@ -70,11 +85,6 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
     window.addEventListener("pointerup", stop);
     return () => window.removeEventListener("pointerup", stop);
   }, []);
-
-  // The session tempo can change while the dialog is open.
-  useEffect(() => {
-    setPattern((current) => (current.bpm === bpm ? current : { ...current, bpm }));
-  }, [bpm]);
 
   // Keep the preview loop in step with every edit, without restarting it.
   useEffect(() => {
@@ -211,6 +221,21 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
     });
   };
 
+  /**
+   * Sets how many bars a row runs before it loops. New bars start as copies,
+   * ready to change, and the pattern grows if it is too short to hear them.
+   */
+  const setRowBars = (id: string, bars: number) =>
+    setPattern((current) => ({
+      ...current,
+      // A length with gaps is left as it was set.
+      bars: current.sections?.length ? current.bars : Math.max(current.bars, bars),
+      rows: current.rows.map((row) => (row.id === id ? { ...row, ...resizeRow(row, bars) } : row)),
+    }));
+
+  const longestRow = longestRowBars(pattern);
+  const longestPlaying = longestPlayingBars(pattern);
+
   const addRow = () =>
     setPattern((current) => ({ ...current, rows: [...current.rows, synthRow("piano")] }));
 
@@ -226,6 +251,15 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
         stepNotes: undefined,
       })),
     }));
+
+  const commitBpm = () => {
+    if (bpmDraft === null) return;
+    const value = Number(bpmDraft);
+    if (bpmDraft.trim() !== "" && Number.isFinite(value)) {
+      setPattern((current) => ({ ...current, bpm: clampBpm(value) }));
+    }
+    setBpmDraft(null);
+  };
 
   const hasHits = pattern.rows.some((row) => !row.muted && row.steps.some(Boolean));
 
@@ -272,37 +306,72 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
             {previewing ? "■ Stop" : "▶ Preview loop"}
           </button>
 
-          <span className="pattern__tempo">{bpm} BPM</span>
+          <label className="pattern__field">
+            Tempo
+            <input
+              type="number"
+              className="pattern__bpm"
+              min={MIN_BPM}
+              max={MAX_BPM}
+              step={1}
+              value={bpmDraft ?? String(pattern.bpm)}
+              onChange={(event) => setBpmDraft(event.target.value)}
+              onBlur={commitBpm}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") setBpmDraft(null);
+              }}
+              title={`${MIN_BPM} to ${MAX_BPM} BPM`}
+              aria-label="Pattern tempo in beats per minute"
+            />
+            BPM
+          </label>
+          {pattern.bpm !== bpm && (
+            <button
+              type="button"
+              className="btn btn--small pattern__match"
+              onClick={() => setPattern((current) => ({ ...current, bpm }))}
+              title="This pattern's beats won't line up with the session grid at a different tempo"
+            >
+              Use session {bpm} BPM
+            </button>
+          )}
 
           <label className="pattern__field">
             Length
             <input
-              type="number"
-              className="pattern__bars"
-              min={1}
-              max={MAX_BARS}
-              step={1}
-              value={barsDraft ?? String(pattern.bars)}
+              type="text"
+              inputMode="text"
+              spellCheck={false}
+              className={`pattern__bars${barsDraft !== null && !parseLength(barsDraft) ? " pattern__bars--invalid" : ""}`}
+              value={barsDraft ?? formatLength(pattern)}
               onChange={(event) => {
                 setBarsDraft(event.target.value);
-                const bars = Number(event.target.value);
-                if (Number.isInteger(bars) && bars >= 1 && bars <= MAX_BARS) {
-                  setPattern((current) => ({ ...current, bars }));
+                const length = parseLength(event.target.value);
+                if (length && length.bars <= MAX_BARS) {
+                  setPattern((current) => ({ ...current, bars: length.bars, sections: length.sections }));
                 }
               }}
               onBlur={() => {
-                // Past the limit means as long as it goes; anything else unusable is dropped.
-                if (Number(barsDraft) > MAX_BARS) {
-                  setPattern((current) => ({ ...current, bars: MAX_BARS }));
+                // A plain number past the limit means as long as it goes;
+                // anything else unusable is dropped.
+                const length = barsDraft === null ? null : parseLength(barsDraft);
+                if (length && !length.sections && length.bars > MAX_BARS) {
+                  setPattern((current) => ({ ...current, bars: MAX_BARS, sections: undefined }));
                 }
                 setBarsDraft(null);
               }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") event.currentTarget.blur();
               }}
-              title={`1 to ${MAX_BARS} bars. A bar is 4 beats.`}
+              title={`1 to ${MAX_BARS} bars. A bar is 4 beats. Add gaps of silence with +, e.g. 2+3gap+3 plays 2 bars, rests 3, then plays 3 from the top.`}
+              aria-label="Pattern length in bars"
             />
-            {pattern.bars === 1 ? "bar" : "bars"}
+            {pattern.sections?.length
+              ? `= ${pattern.bars} bars`
+              : pattern.bars === 1
+                ? "bar"
+                : "bars"}
           </label>
 
           <label className="pattern__field pattern__swing">
@@ -324,6 +393,24 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
           </button>
         </div>
 
+        {longestPlaying < longestRow &&
+          (pattern.sections?.length ? (
+            <p className="pattern__warning">
+              A row is {longestRow} bars long but the longest stretch between gaps is {longestPlaying}, so its
+              last bars are never heard.
+            </p>
+          ) : (
+            <p className="pattern__warning">
+              A row is {longestRow} bars long but the pattern is {pattern.bars}, so its last bars are cut.{" "}
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => setPattern((current) => ({ ...current, bars: longestRow }))}
+              >
+                Make it {longestRow} bars
+              </button>
+            </p>
+          ))}
         {error && <p className="modal__error pattern__error">{error}</p>}
 
         <div className="pattern__grid-scroll">
@@ -387,6 +474,20 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
                     <span className="pattern__note pattern__note--empty" />
                   )}
 
+                  <select
+                    className="pattern__length"
+                    value={rowBars(row)}
+                    onChange={(event) => setRowBars(row.id, Number(event.target.value))}
+                    title="How many bars this row plays before it repeats. Longer rows start as copies of what is there, so change the notes in the new bars."
+                    aria-label="Row length"
+                  >
+                    {lengthOptions(row).map((bars) => (
+                      <option key={bars} value={bars}>
+                        {bars} {bars === 1 ? "bar" : "bars"}
+                      </option>
+                    ))}
+                  </select>
+
                   <input
                     type="range"
                     className="pattern__gain"
@@ -445,49 +546,61 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
                 </div>
 
                 <div className="pattern__steps">
-                  {row.steps.map((on, index) => {
-                    const tuned = rowIsTuned(row);
-                    const note = stepNote(row, index);
-                    const melodic = on && tuned;
-                    return (
-                      <button
-                        key={index}
-                        type="button"
-                        className={`pattern__step${on ? " pattern__step--on" : ""}${
-                          index % 4 === 0 ? " pattern__step--beat" : ""
-                        }`}
-                        data-nudge={melodic ? "" : undefined}
-                        data-row={row.id}
-                        data-step={index}
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          // Touch pointers capture themselves; release so the
-                          // drag can paint the neighbouring steps.
-                          event.currentTarget.releasePointerCapture?.(event.pointerId);
-                          // A lit step on another note takes the brush note
-                          // instead of switching off.
-                          const value = melodic && note !== row.note ? true : !on;
-                          paint.current = value;
-                          setStep(row.id, index, value);
-                        }}
-                        onPointerEnter={() => {
-                          if (paint.current !== null) setStep(row.id, index, paint.current);
-                        }}
-                        onKeyDown={(event) => {
-                          if (!melodic) return;
-                          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-                            event.preventDefault();
-                            nudgeStep(row.id, index, event.key === "ArrowUp" ? 1 : -1);
-                          }
-                        }}
-                        title={melodic ? `${noteName(note)} · scroll or ↑/↓ to change` : undefined}
-                        aria-label={melodic ? `Step ${index + 1}, ${noteName(note)}` : `Step ${index + 1}`}
-                        aria-pressed={on}
-                      >
-                        {melodic ? noteName(note) : null}
-                      </button>
-                    );
-                  })}
+                  {bars(row).map((bar) => (
+                    <div key={bar} className="pattern__bar">
+                      {longestRow > 1 && (
+                        <span className="pattern__bar-label" title={rowBars(row) > 1 ? `Bar ${bar + 1}` : undefined}>
+                          {rowBars(row) > 1 ? bar + 1 : ""}
+                        </span>
+                      )}
+                      {row.steps.slice(bar * STEPS_PER_BAR, (bar + 1) * STEPS_PER_BAR).map((on, offset) => {
+                        const index = bar * STEPS_PER_BAR + offset;
+                        const tuned = rowIsTuned(row);
+                        const note = stepNote(row, index);
+                        const melodic = on && tuned;
+                        return (
+                          <button
+                            key={index}
+                            type="button"
+                            className={`pattern__step${on ? " pattern__step--on" : ""}${
+                              offset % 4 === 0 ? " pattern__step--beat" : ""
+                            }`}
+                            data-nudge={melodic ? "" : undefined}
+                            data-row={row.id}
+                            data-step={index}
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              // Touch pointers capture themselves; release so the
+                              // drag can paint the neighbouring steps.
+                              event.currentTarget.releasePointerCapture?.(event.pointerId);
+                              // A lit step on another note takes the brush note
+                              // instead of switching off.
+                              const value = melodic && note !== row.note ? true : !on;
+                              paint.current = value;
+                              setStep(row.id, index, value);
+                            }}
+                            onPointerEnter={() => {
+                              if (paint.current !== null) setStep(row.id, index, paint.current);
+                            }}
+                            onKeyDown={(event) => {
+                              if (!melodic) return;
+                              if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                                event.preventDefault();
+                                nudgeStep(row.id, index, event.key === "ArrowUp" ? 1 : -1);
+                              }
+                            }}
+                            title={melodic ? `${noteName(note)} · scroll or ↑/↓ to change` : undefined}
+                            aria-label={`${rowBars(row) > 1 ? `Bar ${bar + 1}, step ${offset + 1}` : `Step ${index + 1}`}${
+                              melodic ? `, ${noteName(note)}` : ""
+                            }`}
+                            aria-pressed={on}
+                          >
+                            {melodic ? noteName(note) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
@@ -515,7 +628,8 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
           </button>
           <span className="pattern__hint">
             Click or drag across steps · on instruments, pick a note then paint; scroll a step to
-            change its note · {STEPS_PER_BAR} steps = 1 bar
+            change its note · {STEPS_PER_BAR} steps = 1 bar · set a row to 2–8 bars to change the tune
+            each bar while the beat repeats
           </span>
           <div className="pattern__footer-actions">
             <button type="button" className="btn btn--secondary" onClick={onClose} disabled={busy}>
@@ -543,6 +657,18 @@ export function PatternDialog({ initial, bpm, title, isUpdate, note, onCommit, o
       )}
     </div>
   );
+}
+
+/** Each bar of the row, one line of steps apiece. */
+function bars(row: PatternRow): number[] {
+  return Array.from({ length: rowBars(row) }, (_, bar) => bar);
+}
+
+/** The lengths offered, keeping one set elsewhere selectable. */
+function lengthOptions(row: PatternRow): number[] {
+  const current = rowBars(row);
+  const options: number[] = [...ROW_BAR_OPTIONS];
+  return options.includes(current) ? options : [...options, current].sort((a, b) => a - b);
 }
 
 function noteOptions(row: PatternRow): number[] {

@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::audio::engine::{AudioEngine, Preview, Track};
-use crate::audio::export::BitDepth;
+use crate::audio::encode::{self, ExportFormat};
+use crate::audio::fx::TrackFx;
 use crate::audio::master::MasterBus;
 use crate::audio::pattern::{self, Pattern};
-use crate::audio::recording::{self, Recorder};
-use crate::audio::{decode, edit, export, peaks, ClipEntry, ClipStore, Clipboard};
-use crate::workspace::{self, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
+use crate::audio::recording::{self, Recorder, RecordingSource};
+use crate::audio::{decode, edit, export, peaks, voice, ClipEntry, ClipStore, Clipboard};
+use crate::workspace::{self, BeatTrack, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
 
 /// Everything the UI needs to describe an imported file.
 #[derive(Serialize)]
@@ -71,6 +72,9 @@ pub struct TrackSetting {
     /// Where the track starts on the session timeline, in seconds.
     #[serde(default)]
     pub offset_secs: f64,
+    /// Reverb, delay, wet and dry.
+    #[serde(default)]
+    pub fx: Option<TrackFx>,
 }
 
 #[derive(Serialize)]
@@ -292,13 +296,23 @@ pub fn undo_edit(clip_id: u64, store: State<ClipStore>) -> Result<ClipInfo, Stri
     store.undo(clip_id, |entry| clip_info(clip_id, entry))
 }
 
-/// Writes each clip to its own WAV file inside `directory`, at its native rate
+/// Gives a clip a new name, as typed on its track header.
+#[tauri::command]
+pub fn rename_clip(clip_id: u64, name: String, store: State<ClipStore>) -> Result<ClipInfo, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("give the track a name".to_string());
+    }
+    store.rename(clip_id, name.to_string(), |entry| clip_info(clip_id, entry))
+}
+
+/// Writes each clip to its own file in `format` inside `directory`, at its native rate
 /// and channel count. Returns the paths written.
 #[tauri::command]
 pub fn export_tracks(
     clip_ids: Vec<u64>,
     directory: String,
-    bit_depth: BitDepth,
+    format: ExportFormat,
     store: State<ClipStore>,
 ) -> Result<Vec<String>, String> {
     if clip_ids.is_empty() {
@@ -315,21 +329,21 @@ pub fn export_tracks(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("track");
-        let path = unique_path(Path::new(&directory).join(format!("{stem}.wav")));
+        let path = unique_path(Path::new(&directory).join(format!("{stem}.{}", format.extension())));
 
-        export::write_wav(&path, &audio.channels, audio.sample_rate, bit_depth)?;
+        encode::write_audio(&path, &audio.channels, audio.sample_rate, format)?;
         written.push(path.to_string_lossy().to_string());
     }
 
     Ok(written)
 }
 
-/// Mixes the selected tracks down to a single stereo WAV.
+/// Mixes the selected tracks down to a single stereo file in `format`.
 #[tauri::command]
 pub fn export_master(
     tracks: Vec<TrackSetting>,
     path: String,
-    bit_depth: BitDepth,
+    format: ExportFormat,
     master: Option<MasterBus>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
@@ -345,16 +359,16 @@ pub fn export_master(
             .ok_or_else(|| format!("clip {} is not open", setting.clip_id))?;
         // Render at the highest rate present, so nothing is downsampled.
         sample_rate = sample_rate.max(audio.sample_rate);
-        sources.push((audio, setting.gain, start_offset(setting.offset_secs)));
+        sources.push((audio, setting.gain, start_offset(setting.offset_secs), setting.fx));
     }
 
     if sources.is_empty() {
         return Err("no tracks are selected for the master".to_string());
     }
 
-    let rendered = export::render_master_with(&sources, sample_rate, master.unwrap_or_default());
+    let rendered = export::render_master_fx(&sources, sample_rate, master.unwrap_or_default());
     let path_buf = PathBuf::from(&path);
-    export::write_wav(&path_buf, &rendered, sample_rate, bit_depth)?;
+    encode::write_audio(&path_buf, &rendered, sample_rate, format)?;
     Ok(path)
 }
 
@@ -371,12 +385,15 @@ pub fn set_mix(
         let audio = store
             .audio(setting.clip_id)
             .ok_or_else(|| format!("clip {} is not open", setting.clip_id))?;
-        resolved.push(Track {
-            audio,
-            gain: setting.gain.clamp(0.0, 4.0),
-            muted: setting.muted,
-            offset_secs: start_offset(setting.offset_secs),
-        });
+        resolved.push(
+            Track::new(
+                audio,
+                setting.gain.clamp(0.0, 4.0),
+                setting.muted,
+                start_offset(setting.offset_secs),
+            )
+            .with_fx(setting.clip_id, setting.fx),
+        );
     }
     engine.mixer.set_tracks(resolved);
     Ok(())
@@ -424,17 +441,20 @@ pub struct InputDeviceInfo {
 }
 
 #[tauri::command]
-pub fn probe_input_device(recorder: State<Mutex<Recorder>>) -> Result<InputDeviceInfo, String> {
-    let rec = recorder.lock().unwrap();
+pub fn probe_input_device(source: Option<RecordingSource>) -> Result<InputDeviceInfo, String> {
+    let format = Recorder::probe(source.unwrap_or_default())?;
     Ok(InputDeviceInfo {
-        sample_rate: rec.sample_rate(),
-        channels: rec.channel_count(),
+        sample_rate: format.sample_rate,
+        channels: format.channel_count,
     })
 }
 
 #[tauri::command]
-pub fn start_recording(recorder: State<Mutex<Recorder>>) -> Result<(), String> {
-    recorder.lock().unwrap().start()
+pub fn start_recording(
+    recorder: State<Mutex<Recorder>>,
+    source: Option<RecordingSource>,
+) -> Result<(), String> {
+    recorder.lock().unwrap().start(source.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -627,6 +647,24 @@ pub fn adjust_pitch(
 }
 
 #[tauri::command]
+pub fn enhance_voice(
+    clip_id: u64,
+    start_secs: f64,
+    end_secs: f64,
+    chain: voice::VoiceChain,
+    store: State<ClipStore>,
+) -> Result<ClipInfo, String> {
+    store.edit(
+        clip_id,
+        |audio| {
+            let (start, end) = edit::frame_range(audio, start_secs, end_secs);
+            voice::enhance(audio, start, end, &chain)
+        },
+        |entry| clip_info(clip_id, entry),
+    )
+}
+
+#[tauri::command]
 pub fn adjust_time(
     clip_id: u64,
     start_secs: f64,
@@ -764,6 +802,43 @@ pub fn preview_play(
     Ok(())
 }
 
+/// The preview key for a project's track. A `/` can't be in a file name, so
+/// this never matches a tune's name.
+fn project_preview_key(project: &str, index: usize) -> String {
+    format!("project/{project}/{index}")
+}
+
+/// Plays one track of a saved project in the preview player, as `preview_play`
+/// does a tune. Its preview name is `project_preview_key`.
+#[tauri::command(async)]
+pub fn preview_project_track(
+    name: String,
+    index: usize,
+    workspace: State<Workspace>,
+    engine: State<AudioEngine>,
+) -> Result<(), String> {
+    let key = project_preview_key(&name, index);
+    engine.mixer.pause();
+    if engine.mixer.preview_name().as_deref() == Some(key.as_str()) && engine.mixer.resume_preview()
+    {
+        return Ok(());
+    }
+
+    engine.mixer.pause_preview();
+    let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let track = project
+        .tracks
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| format!("{name} has no track {}", index + 1))?;
+    let (_, audio, _, _) = decode_project_track(&dir, track)?;
+    engine.mixer.start_preview(Preview {
+        name: key,
+        audio: std::sync::Arc::new(audio),
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn preview_pause(engine: State<AudioEngine>) {
     engine.mixer.pause_preview();
@@ -802,6 +877,8 @@ pub struct ProjectTrackSetting {
     pub offset_secs: f64,
     #[serde(default)]
     pub pattern_id: Option<String>,
+    #[serde(default)]
+    pub fx: Option<TrackFx>,
 }
 
 /// One track of a project that was opened, shaped like the UI's own `Track`.
@@ -816,6 +893,8 @@ pub struct OpenedTrack {
     pub offset: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fx: Option<TrackFx>,
 }
 
 /// A project that was opened: its tracks, and every pattern kept in it.
@@ -849,6 +928,7 @@ pub fn save_project(
                 in_master: setting.in_master,
                 offset_secs: start_offset(setting.offset_secs),
                 pattern_id: setting.pattern_id,
+                fx: setting.fx,
             },
             audio,
         ));
@@ -875,29 +955,160 @@ pub fn open_project(
 
     let mut decoded = Vec::with_capacity(project.tracks.len());
     for track in project.tracks {
-        let path = dir.join(&track.file);
-        let audio = decode::decode_file(&path).map_err(|e| format!("{}: {e}", track.name))?;
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        decoded.push((track, audio, path, size));
+        decoded.push(decode_project_track(&dir, track)?);
     }
 
     let tracks = decoded
         .into_iter()
-        .map(|(track, audio, path, size)| {
-            let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
-            Ok(OpenedTrack {
-                clip: store.with(id, |entry| clip_info(id, entry))?,
-                gain: track.gain,
-                muted: track.muted,
-                soloed: track.soloed,
-                in_master: track.in_master,
-                offset: start_offset(track.offset_secs),
-                pattern_id: track.pattern_id,
-            })
-        })
+        .map(|loaded| insert_project_track(&store, loaded))
         .collect::<Result<Vec<_>, String>>()?;
 
     Ok(OpenedProject { tracks, patterns })
+}
+
+/// One track of a saved project, as listed before any audio is loaded.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTrackSummary {
+    pub index: usize,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern_id: Option<String>,
+}
+
+/// What a saved project holds, for picking parts of it to bring into this session.
+#[derive(Serialize)]
+pub struct ProjectContents {
+    pub tracks: Vec<ProjectTrackSummary>,
+    pub patterns: Vec<SavedPattern>,
+}
+
+/// Lists a project's tracks and patterns without loading any audio.
+#[tauri::command]
+pub fn project_contents(name: String, workspace: State<Workspace>) -> Result<ProjectContents, String> {
+    let (project, _) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let tracks = project
+        .tracks
+        .into_iter()
+        .enumerate()
+        .map(|(index, track)| ProjectTrackSummary {
+            index,
+            name: track.name,
+            pattern_id: track.pattern_id,
+        })
+        .collect();
+    Ok(ProjectContents { tracks, patterns: project.patterns })
+}
+
+/// Loads one track of a saved project as a new clip, staged as it was saved.
+#[tauri::command(async)]
+pub fn import_project_track(
+    name: String,
+    index: usize,
+    workspace: State<Workspace>,
+    store: State<ClipStore>,
+) -> Result<OpenedTrack, String> {
+    let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
+    let track = project
+        .tracks
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| format!("{name} has no track {}", index + 1))?;
+    insert_project_track(&store, decode_project_track(&dir, track)?)
+}
+
+type LoadedTrack = (ProjectTrack, decode::DecodedAudio, PathBuf, u64);
+
+fn decode_project_track(dir: &Path, track: ProjectTrack) -> Result<LoadedTrack, String> {
+    let path = dir.join(&track.file);
+    let audio = decode::decode_file(&path).map_err(|e| format!("{}: {e}", track.name))?;
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    Ok((track, audio, path, size))
+}
+
+fn insert_project_track(store: &ClipStore, loaded: LoadedTrack) -> Result<OpenedTrack, String> {
+    let (track, audio, path, size) = loaded;
+    let id = store.insert(audio, track.name, path.to_string_lossy().to_string(), size);
+    Ok(OpenedTrack {
+        clip: store.with(id, |entry| clip_info(id, entry))?,
+        gain: track.gain,
+        muted: track.muted,
+        soloed: track.soloed,
+        in_master: track.in_master,
+        offset: start_offset(track.offset_secs),
+        pattern_id: track.pattern_id,
+        fx: track.fx,
+    })
+}
+
+/// Writes the session's beats to a JSON file: every pattern, and the tracks
+/// made from them. No audio is written.
+#[tauri::command]
+pub fn export_beats(
+    path: String,
+    name: String,
+    tracks: Vec<BeatTrack>,
+    patterns: Vec<SavedPattern>,
+) -> Result<(), String> {
+    workspace::export_beats(Path::new(&path), &name, tracks, patterns)
+}
+
+/// Reads a beats file without rendering anything, so beats can be picked from it.
+#[tauri::command]
+pub fn read_beats(path: String) -> Result<workspace::BeatsFile, String> {
+    workspace::import_beats(Path::new(&path))
+}
+
+/// A beats file that was imported, ready to replace the session.
+#[derive(Serialize)]
+pub struct ImportedBeats {
+    pub name: String,
+    pub tracks: Vec<OpenedTrack>,
+    pub patterns: Vec<SavedPattern>,
+    /// Tracks that could not be rendered (a sample row whose file is not on
+    /// this machine, say), each with the reason. Their patterns still come in.
+    pub skipped: Vec<String>,
+}
+
+/// Reads a beats file and renders each of its tracks from its pattern.
+#[tauri::command(async)]
+pub fn import_beats(path: String, store: State<ClipStore>) -> Result<ImportedBeats, String> {
+    let file = workspace::import_beats(Path::new(&path))?;
+
+    let mut tracks = Vec::with_capacity(file.tracks.len());
+    let mut skipped = Vec::new();
+    for track in file.tracks {
+        let saved = file
+            .patterns
+            .iter()
+            .find(|p| p.id == track.pattern_id)
+            .expect("checked when the file was read");
+        let rendered = serde_json::from_value::<Pattern>(saved.pattern.clone())
+            .map_err(|e| e.to_string())
+            .and_then(|p| pattern::render(&p));
+        let audio = match rendered {
+            Ok(audio) => audio,
+            Err(e) => {
+                skipped.push(format!("{}: {e}", track.name));
+                continue;
+            }
+        };
+        let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+        let path = format!("pattern://{}", track.name);
+        let id = store.insert(audio, track.name, path, size);
+        tracks.push(OpenedTrack {
+            clip: store.with(id, |entry| clip_info(id, entry))?,
+            gain: track.gain,
+            muted: track.muted,
+            soloed: track.soloed,
+            in_master: track.in_master,
+            offset: start_offset(track.offset_secs),
+            pattern_id: Some(track.pattern_id),
+            fx: track.fx,
+        });
+    }
+
+    Ok(ImportedBeats { name: file.name, tracks, patterns: file.patterns, skipped })
 }
 
 /// Sets the master bus: gain on the summed mix, and whether to limit it.
@@ -923,10 +1134,13 @@ pub fn render_pattern(
 
 /// Loops a pattern on its own, outside the timeline, so it can be heard while
 /// it is edited. Calling it again swaps the loop without restarting it.
+/// Starting the loop pauses the session, so the two don't play over each other.
 #[tauri::command]
 pub fn preview_pattern(pattern: Pattern, engine: State<AudioEngine>) -> Result<(), String> {
-    let bars = pattern.bars.min(pattern::PREVIEW_BARS);
-    let audio = pattern::render(&Pattern { bars, ..pattern })?;
+    let audio = pattern::render(&pattern.truncated(pattern::PREVIEW_BARS))?;
+    if !engine.mixer.is_pattern_looping() {
+        engine.mixer.pause();
+    }
     engine.mixer.set_pattern_loop(Some(std::sync::Arc::new(audio)));
     Ok(())
 }

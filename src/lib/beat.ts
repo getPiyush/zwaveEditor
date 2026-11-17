@@ -4,6 +4,7 @@ import type {
   MasterBus,
   Pattern,
   PatternRow,
+  PatternSection,
   RowSound,
   SnapDivision,
   SynthVoice,
@@ -89,7 +90,7 @@ export function clampBpm(bpm: number): number {
 
 // ---------- Built-in voices ----------
 
-export type VoiceGroup = "Drums" | "Instruments" | "Orchestra";
+export type VoiceGroup = "Drums" | "Instruments" | "Orchestra" | "Indian classical" | "Indian";
 
 export interface VoiceInfo {
   voice: SynthVoice;
@@ -146,10 +147,33 @@ export const VOICES: VoiceInfo[] = [
   { voice: "glockenspiel", label: "Glockenspiel", group: "Orchestra", note: 79, tuned: true, choke: false, gain: 0.4, range: [67, 108] },
   { voice: "xylophone", label: "Xylophone", group: "Orchestra", note: 72, tuned: true, choke: false, gain: 0.5, range: [60, 96] },
   { voice: "celesta", label: "Celesta", group: "Orchestra", note: 72, tuned: true, choke: false, gain: 0.45, range: [60, 108] },
+  { voice: "sitar", label: "Sitar", group: "Indian classical", note: 50, tuned: true, choke: false, gain: 0.55, range: [43, 84] },
+  { voice: "sarod", label: "Sarod", group: "Indian classical", note: 48, tuned: true, choke: false, gain: 0.55, range: [40, 80] },
+  { voice: "veena", label: "Veena", group: "Indian classical", note: 48, tuned: true, choke: false, gain: 0.55, range: [36, 76] },
+  { voice: "tanpura", label: "Tanpura", group: "Indian classical", note: 48, tuned: true, choke: false, gain: 0.4, range: [36, 60] },
+  { voice: "sarangi", label: "Sarangi", group: "Indian classical", note: 60, tuned: true, choke: true, gain: 0.4, range: [48, 84] },
+  { voice: "santoor", label: "Santoor", group: "Indian classical", note: 62, tuned: true, choke: false, gain: 0.5, range: [48, 88] },
+  { voice: "bansuri", label: "Bansuri", group: "Indian classical", note: 67, tuned: true, choke: true, gain: 0.45, range: [55, 86] },
+  { voice: "shehnai", label: "Shehnai", group: "Indian classical", note: 67, tuned: true, choke: true, gain: 0.4, range: [57, 86] },
+  { voice: "harmonium", label: "Harmonium", group: "Indian classical", note: 60, tuned: true, choke: true, gain: 0.4, range: [41, 89] },
+  { voice: "tabla", label: "Tabla", group: "Indian classical", note: 62, tuned: true, choke: false, gain: 0.7, range: [55, 77] },
+  { voice: "bayan", label: "Bayan (tabla bass)", group: "Indian classical", note: 41, tuned: true, choke: true, gain: 0.85, range: [33, 52] },
+  { voice: "mridangam", label: "Mridangam", group: "Indian classical", note: 60, tuned: true, choke: false, gain: 0.7, range: [52, 72] },
+  { voice: "dhol", label: "Dhol", group: "Indian", note: 36, tuned: false, choke: false, gain: 0.9, range: DRUM_RANGE },
+  { voice: "dholTilli", label: "Dhol tilli", group: "Indian", note: 38, tuned: false, choke: false, gain: 0.7, range: DRUM_RANGE },
+  { voice: "dholak", label: "Dholak", group: "Indian", note: 41, tuned: false, choke: false, gain: 0.8, range: DRUM_RANGE },
+  { voice: "ghatam", label: "Ghatam", group: "Indian", note: 43, tuned: false, choke: false, gain: 0.7, range: DRUM_RANGE },
+  { voice: "kanjira", label: "Kanjira", group: "Indian", note: 45, tuned: false, choke: false, gain: 0.65, range: DRUM_RANGE },
+  { voice: "manjira", label: "Manjira", group: "Indian", note: 81, tuned: false, choke: false, gain: 0.45, range: DRUM_RANGE },
+  { voice: "ektara", label: "Ektara", group: "Indian", note: 55, tuned: true, choke: true, gain: 0.6, range: [48, 72] },
+  { voice: "tumbi", label: "Tumbi", group: "Indian", note: 72, tuned: true, choke: true, gain: 0.5, range: [64, 88] },
+  { voice: "nadaswaram", label: "Nadaswaram", group: "Indian", note: 62, tuned: true, choke: true, gain: 0.4, range: [55, 84] },
+  { voice: "pungi", label: "Pungi", group: "Indian", note: 62, tuned: true, choke: true, gain: 0.4, range: [57, 74] },
+  { voice: "shankh", label: "Shankh (conch)", group: "Indian", note: 55, tuned: true, choke: true, gain: 0.5, range: [48, 64] },
 ];
 
 export const VOICE_GROUPS: { group: VoiceGroup; voices: VoiceInfo[] }[] = (
-  ["Drums", "Instruments", "Orchestra"] as const
+  ["Drums", "Instruments", "Orchestra", "Indian classical", "Indian"] as const
 ).map((group) => ({ group, voices: VOICES.filter((info) => info.group === group) }));
 
 export function voiceInfo(voice: SynthVoice): VoiceInfo {
@@ -182,6 +206,67 @@ export function transposeRow(row: PatternRow, semitones: number): Pick<PatternRo
     note: row.note + semitones,
     stepNotes: row.stepNotes?.map((note) => (note === null ? null : note + semitones)),
   };
+}
+
+/** How long a row can run before it loops. Eight bars fits the preview loop. */
+export const ROW_BAR_OPTIONS = [1, 2, 4, 8] as const;
+
+/** How many bars a row runs before it comes round again. */
+export function rowBars(row: PatternRow): number {
+  return Math.max(1, Math.ceil(row.steps.length / STEPS_PER_BAR));
+}
+
+/** The most bars any row in the pattern runs before looping. */
+export function longestRowBars(pattern: Pattern): number {
+  return pattern.rows.reduce((most, row) => Math.max(most, rowBars(row)), 1);
+}
+
+/**
+ * Makes a row `bars` long. Growing it repeats what is there, so the new bars
+ * start as copies to change; shrinking it drops the bars past the end.
+ */
+export function resizeRow(row: PatternRow, bars: number): Pick<PatternRow, "steps" | "stepNotes"> {
+  const length = bars * STEPS_PER_BAR;
+  const from = row.steps.length || 1;
+  const steps = Array.from({ length }, (_, i) => row.steps[i % from] ?? false);
+  const stepNotes = row.stepNotes
+    ? Array.from({ length }, (_, i) => row.stepNotes?.[i % from] ?? null)
+    : undefined;
+  return { steps, stepNotes };
+}
+
+/**
+ * Reads a length such as "4" or "2+3gap+3": bar counts joined by "+", with
+ * "gap" (or "g", "rest", "r") after the ones that are silent. Returns null for
+ * anything it can't read.
+ */
+export function parseLength(text: string): { bars: number; sections?: PatternSection[] } | null {
+  const parts = text.toLowerCase().replace(/\s+/g, "").split("+");
+  const sections: PatternSection[] = [];
+  for (const part of parts) {
+    const match = /^(\d+)(gap|g|rest|r|bars?|b)?$/.exec(part);
+    if (!match) return null;
+    const bars = Number(match[1]);
+    if (bars < 1) return null;
+    const rest = match[2] !== undefined && !match[2].startsWith("b");
+    sections.push(rest ? { bars, rest } : { bars });
+  }
+  if (!sections.some((section) => !section.rest)) return null;
+  const bars = sections.reduce((sum, section) => sum + section.bars, 0);
+  // A single playing stretch is just a length.
+  return sections.length === 1 ? { bars } : { bars, sections };
+}
+
+/** The length as it is typed: "4", or "2+3gap+3". */
+export function formatLength(pattern: Pick<Pattern, "bars" | "sections">): string {
+  if (!pattern.sections?.length) return String(pattern.bars);
+  return pattern.sections.map((s) => `${s.bars}${s.rest ? "gap" : ""}`).join("+");
+}
+
+/** The longest stretch of the pattern that plays without a gap. */
+export function longestPlayingBars(pattern: Pick<Pattern, "bars" | "sections">): number {
+  if (!pattern.sections?.length) return pattern.bars;
+  return pattern.sections.reduce((most, s) => (s.rest ? most : Math.max(most, s.bars)), 0);
 }
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];

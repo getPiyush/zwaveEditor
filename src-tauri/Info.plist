@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>zwaveEditor records from the microphone when you record a track or a beat sound.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>zwaveEditor records the sound your computer plays when you choose System audio as the recording source.</string>
 </dict>
 </plist>

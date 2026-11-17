@@ -1,10 +1,12 @@
-//! Live audio recording from input device.
+//! Live audio recording, from an input device or from what the computer plays.
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SizedSample};
+use serde::Deserialize;
 
 use super::decode::DecodedAudio;
 
@@ -17,52 +19,57 @@ const TRIM_LEAD_SECONDS: f64 = 0.005;
 /// Kept after the last sound, so its tail isn't cut.
 const TRIM_TAIL_SECONDS: f64 = 0.02;
 
-/// The thread holding an open input stream. A cpal stream can't move between
-/// threads, so it lives on its own until told to stop.
+/// Where a take comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordingSource {
+    /// The default input device, usually the microphone.
+    #[default]
+    Microphone,
+    /// Everything the default output device plays: other apps, the browser,
+    /// this app's own playback. Windows records it as WASAPI loopback; macOS
+    /// (14.6 or later) through a Core Audio process tap.
+    System,
+}
+
+/// The format a source records in.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceFormat {
+    pub sample_rate: u32,
+    pub channel_count: usize,
+}
+
+/// The thread holding an open stream. It is opened and dropped on the same
+/// thread, which some backends need, and lives there until told to stop.
 struct Session {
     stop: Sender<()>,
     thread: JoinHandle<()>,
+    format: SourceFormat,
 }
 
-/// Captures audio from the default input device into an in-memory buffer.
+/// Captures audio from a [`RecordingSource`] into an in-memory buffer.
+#[derive(Default)]
 pub struct Recorder {
     buffer: Arc<Mutex<Vec<f32>>>,
     session: Option<Session>,
-    sample_rate: u32,
-    channel_count: usize,
 }
 
 impl Recorder {
-    pub fn new() -> Result<Self, String> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "no input device available".to_string())?;
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-        let config = device
-            .default_input_config()
-            .map_err(|e| format!("could not get input config: {e}"))?;
-
-        let sample_rate = config.sample_rate().0;
-        let channel_count = config.channels() as usize;
-
-        Ok(Recorder {
-            buffer: Arc::new(Mutex::new(Vec::new())),
-            session: None,
-            sample_rate,
-            channel_count,
+    /// The format `source` would record in now. Fails when there is no such
+    /// device.
+    pub fn probe(source: RecordingSource) -> Result<SourceFormat, String> {
+        let (_, config) = device_and_config(source)?;
+        Ok(SourceFormat {
+            sample_rate: config.sample_rate(),
+            channel_count: config.channels() as usize,
         })
     }
 
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    pub fn channel_count(&self) -> usize {
-        self.channel_count
-    }
-
-    pub fn start(&mut self) -> Result<(), String> {
+    pub fn start(&mut self, source: RecordingSource) -> Result<(), String> {
         if self.session.is_some() {
             return Err("already recording".to_string());
         }
@@ -72,9 +79,9 @@ impl Recorder {
         let (ready_tx, ready_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
-        let thread = std::thread::spawn(move || match open_stream(buffer) {
-            Ok((stream, sample_rate, channel_count)) => {
-                let _ = ready_tx.send(Ok((sample_rate, channel_count)));
+        let thread = std::thread::spawn(move || match open_stream(source, buffer) {
+            Ok((stream, format)) => {
+                let _ = ready_tx.send(Ok(format));
                 let _ = stop_rx.recv();
                 drop(stream);
             }
@@ -83,21 +90,18 @@ impl Recorder {
             }
         });
 
-        let (sample_rate, channel_count) = ready_rx
+        let format = ready_rx
             .recv()
             .map_err(|_| "the recording thread stopped unexpectedly".to_string())??;
 
-        // The default device may have changed since the last take.
-        self.sample_rate = sample_rate;
-        self.channel_count = channel_count;
-        self.session = Some(Session { stop: stop_tx, thread });
+        self.session = Some(Session { stop: stop_tx, thread, format });
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<DecodedAudio, String> {
-        if !self.close_stream() {
+        let Some(format) = self.close_stream() else {
             return Err("not recording".to_string());
-        }
+        };
 
         let buffer = std::mem::take(&mut *self.buffer.lock().unwrap());
         if buffer.is_empty() {
@@ -105,12 +109,12 @@ impl Recorder {
         }
 
         // Split interleaved buffer into separate channels
-        let channels = (0..self.channel_count)
+        let channels = (0..format.channel_count)
             .map(|ch| {
                 buffer
                     .iter()
                     .skip(ch)
-                    .step_by(self.channel_count)
+                    .step_by(format.channel_count)
                     .copied()
                     .collect()
             })
@@ -118,7 +122,7 @@ impl Recorder {
 
         Ok(DecodedAudio {
             channels,
-            sample_rate: self.sample_rate,
+            sample_rate: format.sample_rate,
             codec: "recorded".to_string(),
             bits_per_sample: Some(32),
         })
@@ -130,79 +134,108 @@ impl Recorder {
         self.buffer.lock().unwrap().clear();
     }
 
-    /// Lets go of the input stream. Returns whether one was open.
-    fn close_stream(&mut self) -> bool {
-        let Some(session) = self.session.take() else {
-            return false;
-        };
+    /// Lets go of the stream. Returns the format it recorded in, if one was open.
+    fn close_stream(&mut self) -> Option<SourceFormat> {
+        let session = self.session.take()?;
         let _ = session.stop.send(());
         let _ = session.thread.join();
-        true
+        Some(session.format)
     }
 }
 
-impl Default for Recorder {
-    fn default() -> Self {
-        Self::new().unwrap_or_else(|_| Recorder {
-            buffer: Arc::new(Mutex::new(Vec::new())),
-            session: None,
-            sample_rate: 48000,
-            channel_count: 2,
-        })
-    }
-}
-
-/// Opens the default input device and starts it writing into `buffer`.
-fn open_stream(buffer: Arc<Mutex<Vec<f32>>>) -> Result<(cpal::Stream, u32, usize), String> {
+/// The device behind `source` and the format to open it in.
+fn device_and_config(
+    source: RecordingSource,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "no input device available".to_string())?;
+    match source {
+        RecordingSource::Microphone => {
+            let device = host
+                .default_input_device()
+                .ok_or_else(|| "no input device available".to_string())?;
+            let config = device
+                .default_input_config()
+                .map_err(|e| format!("could not get input config: {e}"))?;
+            Ok((device, config))
+        }
+        RecordingSource::System => {
+            if !SYSTEM_CAPTURE_SUPPORTED {
+                return Err(
+                    "recording system audio isn't supported here. Route it through a loopback \
+                     input device and record that as the microphone."
+                        .to_string(),
+                );
+            }
+            let device = host
+                .default_output_device()
+                .ok_or_else(|| "no output device to record from".to_string())?;
+            // An output device opened for input records what it plays.
+            let config = device
+                .default_output_config()
+                .map_err(|e| format!("could not get output config: {e}"))?;
+            Ok((device, config))
+        }
+    }
+}
 
-    let config = device
-        .default_input_config()
-        .map_err(|e| format!("could not get input config: {e}"))?;
+/// Whether cpal's default host can record what an output device plays.
+const SYSTEM_CAPTURE_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
 
-    let sample_rate = config.sample_rate().0;
-    let channel_count = config.channels() as usize;
+/// Opens `source` and starts it writing into `buffer`.
+fn open_stream(
+    source: RecordingSource,
+    buffer: Arc<Mutex<Vec<f32>>>,
+) -> Result<(cpal::Stream, SourceFormat), String> {
+    let (device, config) = device_and_config(source)?;
+    let format = SourceFormat {
+        sample_rate: config.sample_rate(),
+        channel_count: config.channels() as usize,
+    };
     let sample_format = config.sample_format();
-    let on_error = |err| eprintln!("recording error: {}", err);
     let stream_config: cpal::StreamConfig = config.into();
 
+    use cpal::SampleFormat as F;
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _| {
-                buffer.lock().unwrap().extend_from_slice(data);
-            },
-            on_error,
-            None,
+        F::F32 => build::<f32>(&device, stream_config, buffer),
+        F::F64 => build::<f64>(&device, stream_config, buffer),
+        F::I8 => build::<i8>(&device, stream_config, buffer),
+        F::I16 => build::<i16>(&device, stream_config, buffer),
+        F::I32 => build::<i32>(&device, stream_config, buffer),
+        F::U8 => build::<u8>(&device, stream_config, buffer),
+        F::U16 => build::<u16>(&device, stream_config, buffer),
+        F::U32 => build::<u32>(&device, stream_config, buffer),
+        other => return Err(format!("unsupported input sample format: {other:?}")),
+    }
+    .map_err(|e| match source {
+        RecordingSource::Microphone => format!("could not open the microphone: {e}"),
+        RecordingSource::System => format!(
+            "could not record system audio: {e}. On macOS this needs 14.6 or later and the \
+             System Audio Recording permission."
         ),
-        cpal::SampleFormat::I16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i16], _| {
-                let converted: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
-                buffer.lock().unwrap().extend_from_slice(&converted);
-            },
-            on_error,
-            None,
-        ),
-        cpal::SampleFormat::U16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[u16], _| {
-                let converted: Vec<f32> =
-                    data.iter().map(|&s| (s as f32 / 32768.0) - 1.0).collect();
-                buffer.lock().unwrap().extend_from_slice(&converted);
-            },
-            on_error,
-            None,
-        ),
-        _ => return Err("unsupported input sample format".to_string()),
-    };
+    })?;
+    stream.play().map_err(|e| format!("failed to start recording: {e}"))?;
+    Ok((stream, format))
+}
 
-    let stream = stream.map_err(|e| format!("failed to build stream: {e}"))?;
-    stream.play().map_err(|e| format!("failed to play stream: {e}"))?;
-    Ok((stream, sample_rate, channel_count))
+/// An input stream that converts whatever `T` the device delivers to f32.
+fn build<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    buffer: Arc<Mutex<Vec<f32>>>,
+) -> Result<cpal::Stream, cpal::Error>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            let mut buffer = buffer.lock().unwrap();
+            buffer.extend(data.iter().map(|&s| s.to_sample::<f32>()));
+        },
+        |err| eprintln!("recording error: {err}"),
+        None,
+    )
 }
 
 /// Cuts the silence around a take, so a recorded hit lands right on its step.
@@ -214,7 +247,10 @@ pub fn trim_silence(audio: DecodedAudio) -> Result<DecodedAudio, String> {
         .flatten()
         .fold(0.0f32, |m, s| m.max(s.abs()));
     if peak < SILENT_PEAK {
-        return Err("no sound was picked up. Check the microphone and its permission.".to_string());
+        return Err(
+            "no sound was picked up. Check that something is playing, or the microphone and its permission."
+                .to_string(),
+        );
     }
 
     let threshold = peak * TRIM_THRESHOLD;

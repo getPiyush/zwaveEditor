@@ -19,7 +19,7 @@ pub fn run() {
         .manage(Clipboard::default())
         .manage(AudioEngine::new())
         .manage(StartupFiles::from_args())
-        .manage(Mutex::new(Recorder::new().unwrap_or_default()))
+        .manage(Mutex::new(Recorder::new()))
         .setup(|app| {
             // Until the user picks a workspace, it lives in their documents.
             let default_root = app
@@ -50,6 +50,7 @@ pub fn run() {
             commands::new_blank_clip,
             commands::new_clip_from_clipboard,
             commands::undo_edit,
+            commands::rename_clip,
             commands::export_tracks,
             commands::export_master,
             commands::probe_input_device,
@@ -66,6 +67,7 @@ pub fn run() {
             commands::fade_out,
             commands::adjust_pitch,
             commands::adjust_time,
+            commands::enhance_voice,
             commands::insert_audio_file,
             commands::get_workspace,
             commands::set_workspace,
@@ -78,6 +80,12 @@ pub fn run() {
             commands::save_project,
             commands::list_projects,
             commands::open_project,
+            commands::project_contents,
+            commands::import_project_track,
+            commands::preview_project_track,
+            commands::export_beats,
+            commands::import_beats,
+            commands::read_beats,
             commands::set_master,
             commands::render_pattern,
             commands::preview_pattern,

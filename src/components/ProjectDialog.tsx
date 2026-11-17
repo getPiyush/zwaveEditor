@@ -1,7 +1,22 @@
 import { useEffect, useState } from "react";
 
-import { listProjects, openProject, saveProject } from "../lib/api";
-import type { OpenedProject, ProjectSummary, SavedPattern, Track, WorkspaceInfo } from "../types";
+import {
+  exportBeats,
+  importBeats,
+  listProjects,
+  openProject,
+  pickBeatsFile,
+  pickSavePath,
+  saveProject,
+} from "../lib/api";
+import type {
+  ImportedBeats,
+  OpenedProject,
+  ProjectSummary,
+  SavedPattern,
+  Track,
+  WorkspaceInfo,
+} from "../types";
 import { WorkspaceBar } from "./WorkspaceBar";
 
 interface Props {
@@ -14,6 +29,8 @@ interface Props {
   onWorkspaceChange: (path: string | null) => Promise<void>;
   onSaved: (name: string) => void;
   onOpened: (name: string, project: OpenedProject) => void;
+  /** A beats file replaced the session. It is not a saved project until saved. */
+  onImported: (beats: ImportedBeats) => void;
   onClose: () => void;
 }
 
@@ -34,6 +51,7 @@ export function ProjectDialog({
   onWorkspaceChange,
   onSaved,
   onOpened,
+  onImported,
   onClose,
 }: Props) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -92,6 +110,55 @@ export function ProjectDialog({
     }
   };
 
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const beatTracks = tracks.filter((track) => track.patternId !== undefined).length;
+  const audioTracks = tracks.length - beatTracks;
+
+  const exportJson = async () => {
+    setError(null);
+    setResult(null);
+    try {
+      const path = await pickSavePath(`${trimmed || "Untitled"} beats.json`, {
+        name: "zwaveEditor beats",
+        extension: "json",
+      });
+      if (!path) return;
+      setBusy(true);
+      await exportBeats(path, trimmed || "Untitled", tracks, patterns);
+      setResult(
+        `Exported ${plural(patterns.length, "pattern")} and ${plural(beatTracks, "beat track")} to ${path}` +
+          (audioTracks > 0 ? `. ${plural(audioTracks, "audio track")} left out.` : "."),
+      );
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importJson = async () => {
+    setError(null);
+    try {
+      const path = await pickBeatsFile();
+      if (!path) return;
+      setBusy(true);
+      const beats = await importBeats(path);
+      onImported(beats);
+      if (beats.skipped.length === 0) {
+        onClose();
+        return;
+      }
+      setError(
+        `Imported, but ${plural(beats.skipped.length, "track")} could not be rendered here ` +
+          `(their patterns are in the Patterns menu): ${beats.skipped.join("; ")}`,
+      );
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="modal-backdrop" onPointerDown={onClose}>
       <div
@@ -137,24 +204,46 @@ export function ProjectDialog({
               >
                 {replaces ? "Replace saved project" : "Save"}
               </button>
+              <button
+                type="button"
+                onClick={() => void exportJson()}
+                disabled={busy || patterns.length === 0}
+                title="Every pattern and the tracks made from them, as one small JSON file. No audio."
+              >
+                Export beats (JSON)…
+              </button>
             </div>
           </>
-        ) : projects.length === 0 ? (
-          <p className="modal__note">No projects are saved in this workspace yet.</p>
         ) : (
-          <ul className="project-list">
-            {projects.map((project) => (
-              <li key={project.name}>
-                <button type="button" onClick={() => void open(project)} disabled={busy}>
-                  <span className="project-list__name">{project.name}</span>
-                  <span className="project-list__meta">
-                    {project.trackCount} {project.trackCount === 1 ? "track" : "tracks"} ·{" "}
-                    {savedOn(project)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className="modal__actions">
+              <button
+                type="button"
+                onClick={() => void importJson()}
+                disabled={busy}
+                title="Opens a beats file exported from zwaveEditor and renders its tracks."
+              >
+                Import beats (JSON)…
+              </button>
+            </div>
+            {projects.length === 0 ? (
+              <p className="modal__note">No projects are saved in this workspace yet.</p>
+            ) : (
+              <ul className="project-list">
+                {projects.map((project) => (
+                  <li key={project.name}>
+                    <button type="button" onClick={() => void open(project)} disabled={busy}>
+                      <span className="project-list__name">{project.name}</span>
+                      <span className="project-list__meta">
+                        {project.trackCount} {project.trackCount === 1 ? "track" : "tracks"} ·{" "}
+                        {savedOn(project)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
 
         {busy && <p className="modal__note">{mode === "save" ? "Writing…" : "Opening…"}</p>}
