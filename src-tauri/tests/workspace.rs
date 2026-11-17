@@ -24,6 +24,7 @@ fn track(name: &str, offset_secs: f64) -> ProjectTrack {
         in_master: true,
         offset_secs,
         pattern_id: None,
+        fx: None,
     }
 }
 

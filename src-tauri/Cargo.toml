@@ -21,7 +21,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 symphonia = { version = "0.5", features = ["all"] }
-cpal = "0.15"
+cpal = "0.18"
 arc-swap = "1"
 hound = "3"
 serde = { version = "1", features = ["derive"] }

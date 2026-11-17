@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::audio::decode::DecodedAudio;
 use crate::audio::export::{self, BitDepth};
+use crate::audio::fx::TrackFx;
 
 const TUNES_DIR: &str = "tunes";
 const PROJECTS_DIR: &str = "projects";
@@ -219,6 +220,9 @@ pub struct ProjectTrack {
     /// The pattern this track was rendered from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern_id: Option<String>,
+    /// Reverb, delay, wet and dry, if the track has any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<TrackFx>,
 }
 
 /// A pattern kept in a project. The grid belongs to the UI, so it is stored as

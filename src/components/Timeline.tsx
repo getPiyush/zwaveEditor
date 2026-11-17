@@ -445,6 +445,7 @@ export function Timeline({
                 onRemove={() => onTrackRemove(track.clip.id)}
                 onUndo={() => onTrackUndo(track.clip.id)}
                 onRename={(name) => onTrackRename(track.clip.id, name)}
+                bpm={beat?.bpm}
                 onEditPattern={
                   onTrackEditPattern && track.patternId
                     ? () => onTrackEditPattern(track.clip.id)

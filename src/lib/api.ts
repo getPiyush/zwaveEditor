@@ -14,6 +14,7 @@ import type {
   ProjectContents,
   ProjectSummary,
   RecordedSample,
+  RecordingSource,
   SavedPattern,
   Track,
   TransportState,
@@ -98,6 +99,7 @@ function mixSettings(tracks: Track[]) {
     gain: track.gain,
     muted: track.muted || !track.inMaster || (anySoloed && !track.soloed),
     offsetSecs: track.offset,
+    fx: track.fx ?? null,
   }));
 }
 
@@ -214,12 +216,13 @@ export function transportState(): Promise<TransportState> {
   return invoke<TransportState>("transport_state");
 }
 
-export function probeInputDevice(): Promise<InputDeviceInfo> {
-  return invoke<InputDeviceInfo>("probe_input_device");
+export function probeInputDevice(source: RecordingSource = "microphone"): Promise<InputDeviceInfo> {
+  return invoke<InputDeviceInfo>("probe_input_device", { source });
 }
 
-export function startRecording(): Promise<void> {
-  return invoke("start_recording");
+/** Starts a take from the microphone, or from what the computer plays. */
+export function startRecording(source: RecordingSource = "microphone"): Promise<void> {
+  return invoke("start_recording", { source });
 }
 
 export function stopRecording(): Promise<ClipInfo> {
@@ -418,6 +421,7 @@ export function saveProject(
       inMaster: track.inMaster,
       offsetSecs: track.offset,
       patternId: track.patternId,
+      fx: track.fx ?? null,
     })),
     patterns,
   });

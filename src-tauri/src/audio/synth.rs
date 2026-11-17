@@ -59,6 +59,38 @@ pub enum Voice {
     Glockenspiel,
     Xylophone,
     Celesta,
+    // Indian classical.
+    /// Plucked, with the buzzing jawari bridge and sympathetic strings.
+    Sitar,
+    Sarod,
+    Veena,
+    /// The drone that accompanies a raga.
+    Tanpura,
+    Sarangi,
+    Santoor,
+    Bansuri,
+    Shehnai,
+    Harmonium,
+    /// The tabla's right-hand, tuned drum (dayan).
+    Tabla,
+    /// The tabla's left-hand bass drum, with its pitch glide.
+    Bayan,
+    Mridangam,
+    // Indian folk.
+    /// The dhol's bass head (dagga).
+    Dhol,
+    /// The dhol's treble head, played with a thin stick (tilli).
+    DholTilli,
+    Dholak,
+    Ghatam,
+    Kanjira,
+    Manjira,
+    Ektara,
+    Tumbi,
+    Nadaswaram,
+    Pungi,
+    /// The conch.
+    Shankh,
 }
 
 impl Voice {
@@ -74,6 +106,12 @@ impl Voice {
                 | Voice::Rim
                 | Voice::Shaker
                 | Voice::Cowbell
+                | Voice::Dhol
+                | Voice::DholTilli
+                | Voice::Dholak
+                | Voice::Ghatam
+                | Voice::Kanjira
+                | Voice::Manjira
         )
     }
 }
@@ -116,9 +154,9 @@ pub fn render(voice: Voice, note: f32, rate: u32) -> Vec<f32> {
         Voice::Pizzicato => pluck(note_to_hz(note), rate, 0.3, 0.7, 0x9122),
         Voice::Harp => harp(note_to_hz(note), rate),
         // Reeds: the harmonic recipe is what tells them apart.
-        Voice::Oboe => reed(note_to_hz(note), rate, Reed { formant: 1_400.0, odd_only: false, breath: 0.06, seconds: 1.3, seed: 0x0b0e }),
-        Voice::Clarinet => reed(note_to_hz(note), rate, Reed { formant: 2_200.0, odd_only: true, breath: 0.04, seconds: 1.3, seed: 0xc1a1 }),
-        Voice::Bassoon => reed(note_to_hz(note), rate, Reed { formant: 500.0, odd_only: false, breath: 0.05, seconds: 1.4, seed: 0xba55 }),
+        Voice::Oboe => reed(note_to_hz(note), rate, Reed { formant: 1_400.0, odd_only: false, breath: 0.06, seconds: 1.3, vibrato: 0.004, vibrato_hz: 5.0, seed: 0x0b0e }),
+        Voice::Clarinet => reed(note_to_hz(note), rate, Reed { formant: 2_200.0, odd_only: true, breath: 0.04, seconds: 1.3, vibrato: 0.004, vibrato_hz: 5.0, seed: 0xc1a1 }),
+        Voice::Bassoon => reed(note_to_hz(note), rate, Reed { formant: 500.0, odd_only: false, breath: 0.05, seconds: 1.4, vibrato: 0.004, vibrato_hz: 5.0, seed: 0xba55 }),
         Voice::Trumpet => horn(note_to_hz(note), rate, Horn { open: 8.0, rest: 3.5, attack: 0.02, seconds: 1.0 }),
         Voice::FrenchHorn => horn(note_to_hz(note), rate, Horn { open: 2.5, rest: 1.6, attack: 0.06, seconds: 1.4 }),
         Voice::Trombone => horn(note_to_hz(note), rate, Horn { open: 6.0, rest: 2.5, attack: 0.035, seconds: 1.2 }),
@@ -127,6 +165,30 @@ pub fn render(voice: Voice, note: f32, rate: u32) -> Vec<f32> {
         Voice::Glockenspiel => glockenspiel(note_to_hz(note), rate),
         Voice::Xylophone => xylophone(note_to_hz(note), rate),
         Voice::Celesta => celesta(note_to_hz(note), rate),
+        // Indian strings: the jawari recipe is what tells them apart.
+        Voice::Sitar => jawari(note_to_hz(note), rate, Jawari { brightness: 0.6, seconds: 2.6, buzz: 0.6, bloom: 0.02, jiva: 2_800.0, body: 900.0, sympathetic: 0.35, seed: 0x5174 }),
+        Voice::Sarod => jawari(note_to_hz(note), rate, Jawari { brightness: 0.75, seconds: 1.8, buzz: 0.15, bloom: 0.01, jiva: 3_500.0, body: 1_100.0, sympathetic: 0.2, seed: 0x5a20 }),
+        Voice::Veena => jawari(note_to_hz(note), rate, Jawari { brightness: 0.45, seconds: 3.0, buzz: 0.45, bloom: 0.04, jiva: 2_000.0, body: 500.0, sympathetic: 0.25, seed: 0x7ee4 }),
+        Voice::Tanpura => jawari(note_to_hz(note), rate, Jawari { brightness: 0.2, seconds: 3.5, buzz: 0.9, bloom: 0.3, jiva: 1_800.0, body: 400.0, sympathetic: 0.0, seed: 0x7a49 }),
+        Voice::Ektara => jawari(note_to_hz(note), rate, Jawari { brightness: 0.5, seconds: 1.3, buzz: 0.25, bloom: 0.01, jiva: 2_200.0, body: 700.0, sympathetic: 0.0, seed: 0xe17a }),
+        Voice::Tumbi => jawari(note_to_hz(note), rate, Jawari { brightness: 0.9, seconds: 0.8, buzz: 0.2, bloom: 0.005, jiva: 4_000.0, body: 2_000.0, sympathetic: 0.0, seed: 0x70b1 }),
+        Voice::Sarangi => sarangi(note_to_hz(note), rate),
+        Voice::Santoor => santoor(note_to_hz(note), rate),
+        Voice::Bansuri => bansuri(note_to_hz(note), rate),
+        Voice::Shehnai => reed(note_to_hz(note), rate, Reed { formant: 1_800.0, odd_only: false, breath: 0.08, seconds: 1.4, vibrato: 0.008, vibrato_hz: 5.5, seed: 0x5e4a }),
+        Voice::Nadaswaram => reed(note_to_hz(note), rate, Reed { formant: 1_200.0, odd_only: false, breath: 0.07, seconds: 1.6, vibrato: 0.006, vibrato_hz: 5.0, seed: 0xadaa }),
+        Voice::Pungi => reed(note_to_hz(note), rate, Reed { formant: 900.0, odd_only: true, breath: 0.05, seconds: 1.4, vibrato: 0.01, vibrato_hz: 7.0, seed: 0x9091 }),
+        Voice::Harmonium => harmonium(note_to_hz(note), rate),
+        Voice::Tabla => tabla(note_to_hz(note), rate),
+        Voice::Bayan => bayan(note_to_hz(note), rate),
+        Voice::Mridangam => mridangam(note_to_hz(note), rate),
+        Voice::Shankh => shankh(note_to_hz(note), rate),
+        Voice::Dhol => dhol(rate),
+        Voice::DholTilli => dhol_tilli(rate),
+        Voice::Dholak => dholak(rate),
+        Voice::Ghatam => ghatam(rate),
+        Voice::Kanjira => kanjira(rate),
+        Voice::Manjira => manjira(rate),
     };
     declick_tail(&mut out, rate);
     normalize(&mut out, HIT_PEAK);
@@ -546,6 +608,9 @@ struct Reed {
     odd_only: bool,
     breath: f32,
     seconds: f32,
+    /// Vibrato depth (a fraction of the pitch) and speed.
+    vibrato: f32,
+    vibrato_hz: f32,
     seed: u32,
 }
 
@@ -572,7 +637,7 @@ fn reed(freq: f32, rate: f32, reed: Reed) -> Vec<f32> {
     (0..frames(reed.seconds, rate))
         .map(|i| {
             let t = i as f32 / rate;
-            let vibrato = 1.0 + 0.004 * (TAU * 5.0 * t).sin() * attack(t, 0.4);
+            let vibrato = 1.0 + reed.vibrato * (TAU * reed.vibrato_hz * t).sin() * attack(t, 0.4);
             phase = (phase + freq * vibrato / rate).fract();
             let tone: f32 = harmonics
                 .iter()
@@ -671,6 +736,347 @@ fn xylophone(freq: f32, rate: f32) -> Vec<f32> {
 fn celesta(freq: f32, rate: f32) -> Vec<f32> {
     // Hammered steel plates over wooden resonators: a sweet, almost pure tone.
     struck(freq, rate, &[(1.0, 1.0, 2.4), (2.0, 0.25, 4.0), (4.0, 0.12, 8.0)], 1.8)
+}
+
+/// An Indian plucked string. What makes a sitar a sitar is the jawari: a
+/// wide, gently curved bridge the string grazes as it vibrates, which turns a
+/// plain pluck into a bright, sustained buzz (the "jiva", life, of the tone).
+struct Jawari {
+    brightness: f32,
+    seconds: f32,
+    /// How loud the bridge buzz is next to the string.
+    buzz: f32,
+    /// How long the buzz takes to come in: instant on a sitar, a slow bloom on
+    /// a tanpura.
+    bloom: f32,
+    /// Where the buzz is centred, in Hz.
+    jiva: f32,
+    /// The gourd or skin body's resonance, in Hz.
+    body: f32,
+    /// How much the sympathetic strings (taraf) ring along, an octave up.
+    sympathetic: f32,
+    seed: u32,
+}
+
+fn jawari(freq: f32, rate: f32, j: Jawari) -> Vec<f32> {
+    let string = pluck(freq, rate, j.brightness, j.seconds, j.seed);
+    let taraf = if j.sympathetic > 0.0 {
+        pluck(freq * 2.0, rate, 0.3, j.seconds, j.seed ^ 0x5a5a)
+    } else {
+        vec![0.0; string.len()]
+    };
+    let mut jiva = Biquad::bandpass(j.jiva, 0.9, rate);
+    let mut body = Biquad::bandpass(j.body, 1.0, rate);
+    // Follows the string's level, so the buzz stays equally rich as it fades.
+    let hold = (-1.0 / (0.02 * rate)).exp();
+    let mut level = 0.0f32;
+    string
+        .iter()
+        .zip(&taraf)
+        .enumerate()
+        .map(|(i, (s, sym))| {
+            let t = i as f32 / rate;
+            level = s.abs().max(level * hold);
+            // Hard-driving the string against its own level gives a near-square
+            // wave with the same period: the grazing bridge's harmonics.
+            let grazed = (8.0 * s / (level + 1e-4)).tanh() * level;
+            let buzz = jiva.process(grazed) * j.buzz * attack(t, j.bloom);
+            let sympathetic = sym * j.sympathetic * attack(t, 0.15);
+            s + body.process(*s) * 0.4 + buzz + sympathetic
+        })
+        .collect()
+}
+
+fn sarangi(freq: f32, rate: f32) -> Vec<f32> {
+    // A bowed gut string with a wide, singing vibrato, a nasal skin-covered
+    // body, and dozens of sympathetic strings that shimmer in behind it.
+    const SECONDS: f32 = 1.8;
+    let bow = bowed(freq, rate, Bow { bright: 6.0, body: 1_300.0, vibrato: 0.01, seconds: SECONDS, seed: 0x5a6a });
+    let mut nasal = Biquad::bandpass(2_400.0, 1.5, rate);
+    let nyquist = rate * 0.45;
+    bow.iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f32 / rate;
+            let shimmer: f32 = [(2.0f32, 0.08f32), (3.0, 0.05), (4.0, 0.03)]
+                .iter()
+                .filter(|(ratio, _)| freq * ratio < nyquist)
+                .map(|(ratio, amp)| (TAU * freq * ratio * t).sin() * amp)
+                .sum();
+            s + nasal.process(*s) * 0.5 + shimmer * attack(t, 0.3) * release(t, SECONDS, 0.3)
+        })
+        .collect()
+}
+
+fn santoor(freq: f32, rate: f32) -> Vec<f32> {
+    // A hammered dulcimer: each note is a course of strings tuned a hair
+    // apart, so a struck note shimmers as they beat against each other.
+    const COURSE: [f32; 3] = [0.9985, 1.0, 1.0015];
+    let mut noise = Noise::new(0x5a47);
+    let mut hammer = Biquad::bandpass(4_000.0, 1.0, rate);
+    let nyquist = rate * 0.45;
+    let partials: Vec<(f32, f32, f32)> = (1..=8)
+        .flat_map(|n| {
+            let n = n as f32;
+            COURSE.iter().map(move |d| (freq * n * d, 1.0 / n.powf(1.1), 2.0 + 1.2 * n))
+        })
+        .filter(|(f, _, _)| *f < nyquist)
+        .collect();
+    (0..frames(1.8, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let strings: f32 = partials
+                .iter()
+                .map(|(f, amp, decay)| (TAU * f * t).sin() * amp * (-t * decay).exp())
+                .sum();
+            let mallet = hammer.process(noise.next()) * (-t * 300.0).exp() * 0.6;
+            (strings / COURSE.len() as f32 + mallet) * attack(t, 0.001)
+        })
+        .collect()
+}
+
+fn bansuri(freq: f32, rate: f32) -> Vec<f32> {
+    // Bamboo flute: breathier and rounder than the concert flute, sliding up
+    // into each note (meend) and with a slow, wide vibrato.
+    const SECONDS: f32 = 1.6;
+    let mut noise = Noise::new(0xba45);
+    let mut breath = Biquad::bandpass(freq * 1.5, 0.8, rate);
+    let mut phase = 0.0f32;
+    (0..frames(SECONDS, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let slide = 2f32.powf(-(-t / 0.02).exp() / 12.0);
+            let vibrato = 1.0 + 0.008 * (TAU * 4.5 * t).sin() * attack(t, 0.4);
+            phase = (phase + TAU * freq * slide * vibrato / rate) % TAU;
+            let tone = phase.sin() + (2.0 * phase).sin() * 0.1 + (3.0 * phase).sin() * 0.03;
+            let air = breath.process(noise.next()) * (0.3 + 0.6 * (-t * 12.0).exp());
+            (tone + air) * attack(t, 0.08) * release(t, SECONDS, 0.3)
+        })
+        .collect()
+}
+
+fn harmonium(freq: f32, rate: f32) -> Vec<f32> {
+    // Free reeds pumped by a hand bellows: two reed banks a little apart (so
+    // they beat) plus an octave coupler, with the pressure never quite steady.
+    const SECONDS: f32 = 1.5;
+    const REEDS: [(f32, f32); 3] = [(1.0, 0.5), (1.0025, 0.35), (2.0, 0.25)];
+    let mut phases = [0.0f32, 0.4, 0.7];
+    let mut lowpass = Biquad::lowpass((freq * 6.0).clamp(1_500.0, 7_000.0), 0.8, rate);
+    let mut nasal = Biquad::bandpass(1_200.0, 0.8, rate);
+    (0..frames(SECONDS, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let mut raw = 0.0;
+            for (phase, (ratio, level)) in phases.iter_mut().zip(REEDS) {
+                *phase = (*phase + freq * ratio / rate).fract();
+                raw += saw(*phase) * level;
+            }
+            let tone = lowpass.process(raw);
+            let pressure = 1.0 + 0.03 * (TAU * 1.3 * t).sin();
+            (tone + nasal.process(tone) * 0.5) * pressure * attack(t, 0.04) * release(t, SECONDS, 0.12)
+        })
+        .collect()
+}
+
+/// A tuned hand drum: drumhead modes, each with its own decay, a pitch that
+/// starts a touch sharp, and the slap of the fingers.
+fn hand_drum(freq: f32, rate: f32, modes: &[(f32, f32, f32)], slap: f32, seconds: f32, seed: u32) -> Vec<f32> {
+    let mut noise = Noise::new(seed);
+    let mut fingers = Biquad::bandpass(3_000.0, 0.7, rate);
+    let nyquist = rate * 0.45;
+    (0..frames(seconds, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let bend = 1.0 + 0.02 * (-t * 40.0).exp();
+            let tone: f32 = modes
+                .iter()
+                .filter(|(ratio, _, _)| freq * ratio < nyquist)
+                .map(|(ratio, amp, decay)| (TAU * freq * ratio * bend * t).sin() * amp * (-t * decay).exp())
+                .sum();
+            let hit = fingers.process(noise.next()) * (-t * 250.0).exp() * slap;
+            (tone + hit) * attack(t, 0.001)
+        })
+        .collect()
+}
+
+fn tabla(freq: f32, rate: f32) -> Vec<f32> {
+    // The black syahi paste loads the head so its first modes fall on a
+    // harmonic series (C. V. Raman's finding): that is why the tabla rings
+    // with a clear pitch, the "na" and "tin" strokes.
+    hand_drum(freq, rate, &[(1.0, 1.0, 3.5), (2.0, 0.5, 5.0), (3.0, 0.35, 7.0), (4.0, 0.2, 10.0), (5.0, 0.12, 14.0)], 0.5, 1.2, 0x7ab1)
+}
+
+fn mridangam(freq: f32, rate: f32) -> Vec<f32> {
+    // Also harmonically loaded, but drier and sharper than the tabla, with
+    // the deep "thom" of the left head underneath.
+    let mut noise = Noise::new(0x3d24);
+    let mut thom = Biquad::lowpass(180.0, 0.9, rate);
+    let head = hand_drum(freq, rate, &[(1.0, 1.0, 6.0), (2.0, 0.55, 8.0), (3.0, 0.4, 11.0), (4.0, 0.25, 15.0)], 0.6, 0.9, 0x3d23);
+    head.iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f32 / rate;
+            s + thom.process(noise.next()) * (-t * 30.0).exp() * 1.5 * attack(t, 0.002)
+        })
+        .collect()
+}
+
+fn bayan(freq: f32, rate: f32) -> Vec<f32> {
+    // The tabla's bass drum. The player's wrist presses into the head, so the
+    // pitch swoops up into the note: the "ghe" stroke.
+    let mut noise = Noise::new(0xba1a);
+    let mut thump = Biquad::lowpass(300.0, 0.7, rate);
+    let mut phase = 0.0f32;
+    (0..frames(1.4, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let f = freq * 2f32.powf(-2.0 * (-t / 0.03).exp() / 12.0);
+            phase = (phase + TAU * f / rate) % TAU;
+            let body = (phase.sin() + (2.0 * phase).sin() * 0.25) * (-t * 2.5).exp();
+            let hit = thump.process(noise.next()) * (-t * 80.0).exp() * 0.4;
+            ((body + hit) * 1.5).tanh() * attack(t, 0.002)
+        })
+        .collect()
+}
+
+fn shankh(freq: f32, rate: f32) -> Vec<f32> {
+    // The conch is blown like a horn: a slow swell to a dark, steady tone with
+    // a breathy edge, the pitch rising a little as the lips tighten.
+    const SECONDS: f32 = 1.8;
+    let mut noise = Noise::new(0x5a4c);
+    let mut breath = Biquad::bandpass((freq * 3.0).min(6_000.0), 1.2, rate);
+    let mut lowpass = Biquad::lowpass(freq * 1.5, 1.2, rate);
+    let mut phase = 0.0f32;
+    (0..frames(SECONDS, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let rise = 1.0 - 0.03 * (-t / 0.05).exp();
+            let vibrato = 1.0 + 0.003 * (TAU * 4.0 * t).sin() * attack(t, 0.5);
+            phase = (phase + freq * rise * vibrato / rate).fract();
+            lowpass.set_lowpass(freq * (1.5 + 2.0 * attack(t, 0.3)), 1.2, rate);
+            let tone = lowpass.process(saw(phase));
+            let air = breath.process(noise.next()) * 0.6;
+            (tone + air) * attack(t, 0.15) * release(t, SECONDS, 0.3)
+        })
+        .collect()
+}
+
+fn dhol(rate: f32) -> Vec<f32> {
+    // The dhol's big bass head, struck with a bent stick: a deep, booming
+    // drop with a skin slap on top. The heartbeat of bhangra.
+    let mut noise = Noise::new(0xd401);
+    let mut slap = Biquad::bandpass(800.0, 0.8, rate);
+    let mut phase = 0.0f32;
+    (0..frames(0.8, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let f = 62.0 + 90.0 * (-t / 0.05).exp();
+            phase = (phase + TAU * f / rate) % TAU;
+            let body = phase.sin() * (-t * 4.5).exp() + (2.3 * phase).sin() * (-t * 9.0).exp() * 0.3;
+            let skin = slap.process(noise.next()) * (-t * 60.0).exp() * 0.5;
+            ((body + skin) * 1.8).tanh() * attack(t, 0.001)
+        })
+        .collect()
+}
+
+fn dhol_tilli(rate: f32) -> Vec<f32> {
+    // The dhol's treble head, cracked with a thin cane.
+    let mut noise = Noise::new(0xd402);
+    let mut crack = Biquad::bandpass(3_500.0, 0.9, rate);
+    (0..frames(0.25, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let tone = (TAU * 420.0 * t).sin() * (-t * 25.0).exp() * 0.6
+                + (TAU * 980.0 * t).sin() * (-t * 40.0).exp() * 0.3;
+            let stick = crack.process(noise.next()) * (-t * 120.0).exp();
+            (tone + stick) * attack(t, 0.0005)
+        })
+        .collect()
+}
+
+fn dholak(rate: f32) -> Vec<f32> {
+    // A smaller, two-headed folk drum played with the hands: a round bass
+    // that settles in pitch, and a bright treble slap.
+    let mut noise = Noise::new(0xd0a1);
+    let mut slap = Biquad::bandpass(2_500.0, 0.8, rate);
+    let mut phase = 0.0f32;
+    (0..frames(0.45, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let f = 105.0 * (1.0 + 0.3 * (-t / 0.03).exp());
+            phase = (phase + TAU * f / rate) % TAU;
+            let bass = phase.sin() * (-t * 7.0).exp() * 0.7;
+            let treble = (TAU * 380.0 * t).sin() * (-t * 18.0).exp() * 0.4;
+            let hand = slap.process(noise.next()) * (-t * 90.0).exp() * 0.5;
+            ((bass + treble + hand) * 1.3).tanh() * attack(t, 0.001)
+        })
+        .collect()
+}
+
+fn ghatam(rate: f32) -> Vec<f32> {
+    // A clay pot: the hollow "dum" of air in its mouth, the bright ring of
+    // fired clay, and a hard fingertip click.
+    let mut noise = Noise::new(0x6a7a);
+    let mut click = Biquad::bandpass(4_000.0, 1.0, rate);
+    let mut phase = 0.0f32;
+    (0..frames(0.4, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let f = 160.0 * (1.0 + 0.1 * (-t / 0.01).exp());
+            phase = (phase + TAU * f / rate) % TAU;
+            let dum = phase.sin() * (-t * 14.0).exp() * 0.6;
+            let clay = (TAU * 1_650.0 * t).sin() * (-t * 35.0).exp() * 0.35
+                + (TAU * 2_900.0 * t).sin() * (-t * 55.0).exp() * 0.2;
+            let tip = click.process(noise.next()) * (-t * 500.0).exp() * 0.5;
+            (dum + clay + tip) * attack(t, 0.0005)
+        })
+        .collect()
+}
+
+fn kanjira(rate: f32) -> Vec<f32> {
+    // A small frame drum of lizard skin with a single pair of jingles: a
+    // bending skin tone and a short metallic rattle.
+    let mut noise = Noise::new(0x4a21);
+    let mut jingle = Biquad::highpass(6_000.0, 0.7, rate);
+    let mut phase = 0.0f32;
+    let shakes = [0.0f32, 0.012, 0.03];
+    (0..frames(0.45, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let f = 230.0 * (1.0 + 0.35 * (-t / 0.02).exp());
+            phase = (phase + TAU * f / rate) % TAU;
+            let skin = phase.sin() * (-t * 12.0).exp() * 0.7;
+            let rattle: f32 = shakes
+                .iter()
+                .filter(|start| t >= **start)
+                .map(|start| (-(t - start) * 60.0).exp())
+                .sum::<f32>()
+                + (-t * 14.0).exp() * 0.3;
+            (skin + jingle.process(noise.next()) * rattle * 0.5) * attack(t, 0.0005)
+        })
+        .collect()
+}
+
+fn manjira(rate: f32) -> Vec<f32> {
+    // Small, thick bronze hand cymbals: a few strong, inharmonic high
+    // partials that ring a long time after the clash.
+    const PARTIALS: [(f32, f32, f32); 5] =
+        [(2_680.0, 1.0, 2.5), (3_870.0, 0.7, 3.2), (5_210.0, 0.5, 4.0), (6_930.0, 0.35, 5.5), (8_450.0, 0.2, 7.0)];
+    let mut noise = Noise::new(0x3a41);
+    let mut clash = Biquad::highpass(4_000.0, 0.7, rate);
+    let nyquist = rate * 0.45;
+    (0..frames(1.4, rate))
+        .map(|i| {
+            let t = i as f32 / rate;
+            let ring: f32 = PARTIALS
+                .iter()
+                .filter(|(f, _, _)| *f < nyquist)
+                .map(|(f, amp, decay)| (TAU * f * t).sin() * amp * (-t * decay).exp())
+                .sum();
+            let hit = clash.process(noise.next()) * (-t * 40.0).exp() * 0.8;
+            (ring * 0.4 + hit) * attack(t, 0.0005) * release(t, 1.4, 0.2)
+        })
+        .collect()
 }
 
 /// Fades the last few milliseconds so a hit never ends on a jump.
@@ -789,7 +1195,7 @@ impl Biquad {
 mod tests {
     use super::*;
 
-    const ALL: [Voice; 38] = [
+    const ALL: &[Voice] = &[
         Voice::Kick,
         Voice::Bass808,
         Voice::Snare,
@@ -828,9 +1234,32 @@ mod tests {
         Voice::Glockenspiel,
         Voice::Xylophone,
         Voice::Celesta,
+        Voice::Sitar,
+        Voice::Sarod,
+        Voice::Veena,
+        Voice::Tanpura,
+        Voice::Sarangi,
+        Voice::Santoor,
+        Voice::Bansuri,
+        Voice::Shehnai,
+        Voice::Harmonium,
+        Voice::Tabla,
+        Voice::Bayan,
+        Voice::Mridangam,
+        Voice::Dhol,
+        Voice::DholTilli,
+        Voice::Dholak,
+        Voice::Ghatam,
+        Voice::Kanjira,
+        Voice::Manjira,
+        Voice::Ektara,
+        Voice::Tumbi,
+        Voice::Nadaswaram,
+        Voice::Pungi,
+        Voice::Shankh,
     ];
 
-    const INSTRUMENTS: [Voice; 27] = [
+    const INSTRUMENTS: &[Voice] = &[
         Voice::Piano,
         Voice::ElectricPiano,
         Voice::Guitar,
@@ -858,6 +1287,23 @@ mod tests {
         Voice::Glockenspiel,
         Voice::Xylophone,
         Voice::Celesta,
+        Voice::Sitar,
+        Voice::Sarod,
+        Voice::Veena,
+        Voice::Tanpura,
+        Voice::Sarangi,
+        Voice::Santoor,
+        Voice::Bansuri,
+        Voice::Shehnai,
+        Voice::Harmonium,
+        Voice::Tabla,
+        Voice::Bayan,
+        Voice::Mridangam,
+        Voice::Ektara,
+        Voice::Tumbi,
+        Voice::Nadaswaram,
+        Voice::Pungi,
+        Voice::Shankh,
     ];
 
     /// The fundamental of `samples` by autocorrelation: the first lag (shortest
@@ -880,7 +1326,7 @@ mod tests {
 
     #[test]
     fn every_voice_renders_a_clean_normalised_hit() {
-        for voice in ALL {
+        for &voice in ALL {
             let hit = render(voice, 45.0, 44_100);
             assert!(!hit.is_empty(), "{voice:?} is empty");
             assert!(hit.iter().all(|s| s.is_finite()), "{voice:?} has NaN/inf");
@@ -893,7 +1339,7 @@ mod tests {
 
     #[test]
     fn renders_are_deterministic() {
-        for voice in ALL {
+        for &voice in ALL {
             assert_eq!(render(voice, 60.0, 44_100), render(voice, 60.0, 44_100));
         }
     }
@@ -914,7 +1360,7 @@ mod tests {
     #[test]
     fn instruments_play_the_note_asked_for() {
         // A3 = MIDI 57 = 220 Hz; E2 = 40 = 82.4 Hz for the bass.
-        for voice in INSTRUMENTS {
+        for &voice in INSTRUMENTS {
             let (note, want) = if voice == Voice::Bass { (40.0, 82.41) } else { (57.0, 220.0) };
             let hit = render(voice, note, 44_100);
             let window = &hit[4_410..4_410 + 8_820]; // 0.1s – 0.3s
@@ -928,6 +1374,8 @@ mod tests {
     fn only_untuned_percussion_ignores_the_note() {
         assert!(!Voice::Kick.is_tuned());
         assert!(!Voice::Shaker.is_tuned());
+        assert!(!Voice::Dhol.is_tuned());
+        assert!(!Voice::Manjira.is_tuned());
         assert!(Voice::Tom.is_tuned());
         assert!(INSTRUMENTS.iter().all(|v| v.is_tuned()));
     }

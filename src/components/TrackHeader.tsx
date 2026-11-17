@@ -2,7 +2,9 @@ import { useState } from "react";
 import type { HTMLAttributes } from "react";
 
 import { channelLayoutName, formatSampleRate, formatTime } from "../lib/format";
+import { fxIsActive } from "../lib/fx";
 import type { Track } from "../types";
+import { TrackFxPanel } from "./TrackFxPanel";
 
 interface Props {
   track: Track;
@@ -17,6 +19,8 @@ interface Props {
   onRename: (name: string) => void;
   /** Beat mode, for tracks made in the pattern editor. */
   onEditPattern?: () => void;
+  /** Beat mode's tempo, so delay times can land on the grid. */
+  bpm?: number;
 }
 
 export function TrackHeader({
@@ -30,8 +34,12 @@ export function TrackHeader({
   onUndo,
   onRename,
   onEditPattern,
+  bpm,
 }: Props) {
   const { clip } = track;
+  // The FX button, while its panel is open.
+  const [fxAnchor, setFxAnchor] = useState<HTMLElement | null>(null);
+  const fxOn = fxIsActive(track.fx);
   // What is typed into the start field, until it is committed.
   const [offsetDraft, setOffsetDraft] = useState<string | null>(null);
 
@@ -74,6 +82,29 @@ export function TrackHeader({
       >
         S
       </button>
+      <button
+        type="button"
+        className={`toggle toggle--fx${fxOn ? " toggle--on toggle--fx-on" : ""}`}
+        onClick={(event) => {
+          const button = event.currentTarget;
+          setFxAnchor((open) => (open ? null : button));
+        }}
+        title={fxOn ? "Effects: on — reverb, delay, wet and dry" : "Effects: reverb, delay, wet and dry"}
+        aria-pressed={fxAnchor !== null}
+        aria-label={`Effects for ${clip.name}`}
+      >
+        FX
+      </button>
+      {fxAnchor && (
+        <TrackFxPanel
+          name={clip.name}
+          fx={track.fx}
+          bpm={bpm}
+          anchor={fxAnchor}
+          onChange={(fx) => onChange({ fx })}
+          onClose={() => setFxAnchor(null)}
+        />
+      )}
     </>
   );
 

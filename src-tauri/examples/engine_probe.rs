@@ -45,12 +45,8 @@ fn main() {
     }
     println!("output stream open at {} Hz", status.sample_rate);
 
-    engine.mixer.set_tracks(vec![Track {
-        audio,
-        gain: 1.0,
-        muted: true, // silent probe
-        offset_secs: 0.0,
-    }]);
+    // Muted: a silent probe.
+    engine.mixer.set_tracks(vec![Track::new(audio, 1.0, true, 0.0)]);
 
     engine.mixer.play();
     let started = Instant::now();

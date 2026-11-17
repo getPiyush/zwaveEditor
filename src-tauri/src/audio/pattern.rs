@@ -26,6 +26,13 @@ pub const PREVIEW_BARS: u32 = 8;
 /// One row of the grid is a sixteenth note per step.
 const STEPS_PER_BEAT: f64 = 4.0;
 
+/// A bar of 4/4 in sixteenth-note steps.
+pub const STEPS_PER_BAR: usize = 16;
+
+/// The longest a single row can be before it loops: eight bars, so a melody
+/// fits inside the preview loop.
+pub const MAX_ROW_STEPS: usize = STEPS_PER_BAR * PREVIEW_BARS as usize;
+
 /// Where a summed pattern is pulled back to if the rows add up past it.
 const PATTERN_CEILING: f32 = 0.98;
 
@@ -46,6 +53,8 @@ pub enum RowSound {
 pub struct PatternRow {
     pub sound: RowSound,
     /// One entry per sixteenth note; the row repeats every `steps.len()` steps.
+    /// Drum rows are usually one bar, while a melody can run several bars
+    /// before it comes round again.
     pub steps: Vec<bool>,
     #[serde(default = "unity")]
     pub gain: f32,
@@ -77,26 +86,75 @@ fn middle_c() -> f32 {
 #[serde(rename_all = "camelCase")]
 pub struct Pattern {
     pub bpm: f64,
-    /// How many times the grid plays through. The rendered clip is this many
-    /// grid-lengths long.
+    /// How long the rendered clip is, in bars of 4/4. Each row loops on its
+    /// own length within it.
     pub bars: u32,
     /// 0 is straight; 1 pushes every off-beat sixteenth halfway to the next step.
     #[serde(default)]
     pub swing: f32,
     pub rows: Vec<PatternRow>,
+    /// Splits the clip into stretches that play and stretches of silence, such
+    /// as 2 bars, a 3-bar gap, then 3 bars. Each playing stretch starts every
+    /// row from its beginning. Empty means the whole clip plays; otherwise the
+    /// sections add up to `bars`.
+    #[serde(default)]
+    pub sections: Vec<Section>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Section {
+    pub bars: u32,
+    /// A gap: nothing starts in it, though sounds already ringing carry on.
+    #[serde(default)]
+    pub rest: bool,
 }
 
 impl Pattern {
-    fn steps_per_cycle(&self) -> usize {
-        self.rows.iter().map(|r| r.steps.len()).max().unwrap_or(16).max(1)
-    }
-
     pub fn step_seconds(&self) -> f64 {
         60.0 / self.bpm / STEPS_PER_BEAT
     }
 
     pub fn duration_secs(&self) -> f64 {
-        self.step_seconds() * (self.steps_per_cycle() * self.bars as usize) as f64
+        self.step_seconds() * self.total_steps() as f64
+    }
+
+    fn total_steps(&self) -> usize {
+        STEPS_PER_BAR * self.bars as usize
+    }
+
+    /// The pattern cut to its first `bars` bars, sections and all.
+    pub fn truncated(&self, bars: u32) -> Pattern {
+        let mut left = bars.min(self.bars);
+        let mut sections = Vec::new();
+        for section in &self.sections {
+            if left == 0 {
+                break;
+            }
+            let take = section.bars.min(left);
+            sections.push(Section { bars: take, ..*section });
+            left -= take;
+        }
+        Pattern {
+            bars: bars.min(self.bars),
+            sections,
+            ..self.clone()
+        }
+    }
+
+    /// For each step of the clip, the step within its playing section, or
+    /// None in a gap.
+    fn section_steps(&self) -> Vec<Option<usize>> {
+        if self.sections.is_empty() {
+            return (0..self.total_steps()).map(Some).collect();
+        }
+        self.sections
+            .iter()
+            .flat_map(|section| {
+                let steps = STEPS_PER_BAR * section.bars as usize;
+                (0..steps).map(move |i| (!section.rest).then_some(i))
+            })
+            .collect()
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -106,17 +164,32 @@ impl Pattern {
         if self.bars == 0 || self.bars > MAX_BARS {
             return Err(format!("a pattern must be between 1 and {MAX_BARS} bars long"));
         }
+        if !self.sections.is_empty() {
+            if self.sections.iter().any(|s| s.bars == 0) {
+                return Err("every section of the length needs at least 1 bar".to_string());
+            }
+            let sum: u32 = self.sections.iter().map(|s| s.bars).sum();
+            if sum != self.bars {
+                return Err(format!(
+                    "the sections add up to {sum} bars but the pattern is {} bars",
+                    self.bars
+                ));
+            }
+        }
         if self.rows.is_empty() {
             return Err("the pattern has no rows".to_string());
         }
-        if self.steps_per_cycle() > 256 {
-            return Err("a row can have at most 256 steps".to_string());
+        if self.rows.iter().any(|r| r.steps.len() > MAX_ROW_STEPS) {
+            return Err(format!(
+                "a row can be at most {} bars long",
+                MAX_ROW_STEPS / STEPS_PER_BAR
+            ));
         }
         Ok(())
     }
 }
 
-/// Renders the pattern to a stereo clip, `bars` cycles long.
+/// Renders the pattern to a stereo clip, `bars` bars long.
 ///
 /// Sounds that ring past the end wrap round to the start, so the clip loops
 /// seamlessly — repeat it or paste it end to end and every tail carries over.
@@ -130,7 +203,7 @@ pub fn render(pattern: &Pattern) -> Result<DecodedAudio, String> {
     }
     let step = pattern.step_seconds();
     let swing = pattern.swing.clamp(0.0, 1.0) as f64;
-    let cycle = pattern.steps_per_cycle();
+    let section_steps = pattern.section_steps();
 
     let mut left = vec![0.0f32; total];
     let mut right = vec![0.0f32; total];
@@ -146,18 +219,20 @@ pub fn render(pattern: &Pattern) -> Result<DecodedAudio, String> {
         let (left_gain, right_gain) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
 
         // Every onset in the whole clip, in frames, with the note it plays.
+        // The row loops on its own length, so a one-bar drum row and a
+        // four-bar melody run side by side; a row longer than the clip is cut.
+        // Gaps start nothing, and each playing section starts the row afresh.
         let mut starts: Vec<(usize, f32)> = Vec::new();
-        for repeat in 0..pattern.bars as usize {
-            for (index, on) in row.steps.iter().enumerate() {
-                if !on {
-                    continue;
-                }
-                let step_index = repeat * cycle + index;
-                let swung = if index % 2 == 1 { swing * step * 0.5 } else { 0.0 };
-                let seconds = step_index as f64 * step + swung;
-                let note = row.step_notes.get(index).copied().flatten().unwrap_or(row.note);
-                starts.push((((seconds * rate).round() as usize) % total, note));
+        for (step_index, local) in section_steps.iter().enumerate() {
+            let Some(local) = local else { continue };
+            let index = local % row.steps.len();
+            if !row.steps[index] {
+                continue;
             }
+            let swung = if step_index % 2 == 1 { swing * step * 0.5 } else { 0.0 };
+            let seconds = step_index as f64 * step + swung;
+            let note = row.step_notes.get(index).copied().flatten().unwrap_or(row.note);
+            starts.push((((seconds * rate).round() as usize) % total, note));
         }
         starts.sort_unstable_by_key(|(start, _)| *start);
         starts.dedup_by_key(|(start, _)| *start);
@@ -333,7 +408,53 @@ mod tests {
             bars,
             swing: 0.0,
             rows,
+            sections: Vec::new(),
         }
+    }
+
+    fn sections(list: &[(u32, bool)]) -> Vec<Section> {
+        list.iter().map(|&(bars, rest)| Section { bars, rest }).collect()
+    }
+
+    fn energy(samples: &[f32]) -> f32 {
+        samples.iter().map(|x| x * x).sum()
+    }
+
+    #[test]
+    fn gaps_are_silent_and_each_section_starts_the_rows_afresh() {
+        // 2 bars, a 3-bar gap, then 3 bars of a two-bar melody.
+        let mut p = pattern(vec![melody(&[57.0, 64.0])], 8);
+        p.sections = sections(&[(2, false), (3, true), (3, false)]);
+        let audio = render(&p).unwrap();
+        let bar = bar_frames();
+        assert_eq!(audio.frame_count(), 8 * bar);
+        let ch = &audio.channels[0];
+
+        // The last bar of the gap is silent once the tail of bar 2 has died away.
+        assert_eq!(energy(&ch[4 * bar..5 * bar]), 0.0);
+        // The second section opens with the melody's first bar, not its second.
+        assert!(worst_difference(&ch[5 * bar..5 * bar + 4000], &ch[..4000]) < 1e-5);
+    }
+
+    #[test]
+    fn sections_must_add_up_to_the_length() {
+        let mut p = pattern(vec![row(Voice::Kick, &[0])], 8);
+        p.sections = sections(&[(2, false), (3, true)]);
+        assert!(p.validate().is_err());
+        p.sections = sections(&[(2, false), (0, true), (6, false)]);
+        assert!(p.validate().is_err());
+        p.sections = sections(&[(2, false), (6, true)]);
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn truncating_keeps_the_sections_that_fit() {
+        let mut p = pattern(vec![row(Voice::Kick, &[0])], 12);
+        p.sections = sections(&[(2, false), (3, true), (7, false)]);
+        let short = p.truncated(8);
+        assert_eq!(short.bars, 8);
+        assert_eq!(short.sections, sections(&[(2, false), (3, true), (3, false)]));
+        assert!(short.validate().is_ok());
     }
 
     fn first_onset(samples: &[f32]) -> usize {
@@ -457,6 +578,81 @@ mod tests {
         assert!(matches!(p.rows[1].sound, RowSound::Sample { .. }));
         assert_eq!(p.rows[1].note, 60.0);
         assert_eq!(p.rows[2].step_notes, vec![None, Some(64.0)]);
+    }
+
+    /// A row `bars` long with one hit at the start of each bar, on the given notes.
+    fn melody(notes: &[f32]) -> PatternRow {
+        let mut r = row(Voice::Marimba, &[]);
+        r.gain = 0.3;
+        r.steps = vec![false; STEPS_PER_BAR * notes.len()];
+        r.step_notes = vec![None; r.steps.len()];
+        for (bar, note) in notes.iter().enumerate() {
+            r.steps[bar * STEPS_PER_BAR] = true;
+            r.step_notes[bar * STEPS_PER_BAR] = Some(*note);
+        }
+        r
+    }
+
+    fn bar_frames() -> usize {
+        (4.0 * 60.0 / 90.0 * PATTERN_RATE as f64).round() as usize
+    }
+
+    fn worst_difference(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
+    }
+
+    #[test]
+    fn length_is_set_by_bars_not_by_the_longest_row() {
+        let audio = render(&pattern(vec![row(Voice::Kick, &[0]), melody(&[57.0, 60.0, 64.0, 67.0])], 2)).unwrap();
+        assert_eq!(audio.frame_count(), 2 * bar_frames());
+    }
+
+    #[test]
+    fn a_long_row_changes_its_tune_while_a_short_row_repeats() {
+        // A four-bar melody over a one-bar beat...
+        let mut beat = row(Voice::Kick, &[0, 8]);
+        beat.gain = 0.3;
+        let notes = [57.0, 60.0, 64.0, 67.0];
+        let whole = render(&pattern(vec![beat.clone(), melody(&notes)], 4)).unwrap();
+
+        // ...is the same as a four-bar beat with each bar's note on a row of its own.
+        let mut long_beat = beat.clone();
+        long_beat.steps = beat.steps.repeat(4);
+        let mut rows = vec![long_beat];
+        for (n, note) in notes.iter().enumerate() {
+            let mut only = melody(&[0.0; 4]);
+            only.steps = vec![false; 4 * STEPS_PER_BAR];
+            only.step_notes = vec![None; 4 * STEPS_PER_BAR];
+            only.steps[n * STEPS_PER_BAR] = true;
+            only.note = *note;
+            rows.push(only);
+        }
+        let apart = render(&pattern(rows, 4)).unwrap();
+        assert!(worst_difference(&whole.channels[0], &apart.channels[0]) < 1e-5);
+
+        // And the bars really do differ.
+        let bar = bar_frames();
+        let first = &whole.channels[0][..4000];
+        let second = &whole.channels[0][bar..bar + 4000];
+        assert!(worst_difference(first, second) > 1e-3);
+    }
+
+    #[test]
+    fn a_row_shorter_than_the_clip_loops() {
+        let two_bars = render(&pattern(vec![melody(&[57.0, 64.0])], 4)).unwrap();
+        let bar = bar_frames();
+        let (a, b) = (&two_bars.channels[0][..2 * bar], &two_bars.channels[0][2 * bar..]);
+        assert!(worst_difference(&a[bar / 2..], &b[bar / 2..]) < 1e-5);
+    }
+
+    #[test]
+    fn rows_are_at_most_eight_bars() {
+        let mut r = row(Voice::Piano, &[0]);
+        r.steps = vec![false; MAX_ROW_STEPS];
+        r.steps[0] = true;
+        assert!(pattern(vec![r.clone()], 8).validate().is_ok());
+        r.steps.push(false);
+        assert!(pattern(vec![r], 8).validate().is_err());
     }
 
     #[test]

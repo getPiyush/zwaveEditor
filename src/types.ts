@@ -35,6 +35,22 @@ export interface Track {
   offset: number;
   /** The project pattern this track was rendered from, so it can be reopened. */
   patternId?: string;
+  /** Reverb, delay, wet and dry. Missing means the track plays as it is. */
+  fx?: TrackFx;
+}
+
+/** A track's effects. Mirrors `TrackFx` in `fx.rs`. */
+export interface TrackFx {
+  /** Room size, 0–1; 0 is off. */
+  reverb: number;
+  /** Echo time in seconds; 0 is off. */
+  delay: number;
+  /** How much of each echo comes round again, 0–0.9. */
+  feedback: number;
+  /** Level of the reverb and echoes. */
+  wet: number;
+  /** Level of the track itself. */
+  dry: number;
 }
 
 /** A range selected on one track, in seconds from the start of the clip. */
@@ -71,6 +87,9 @@ export interface ViewRange {
   start: number;
   end: number;
 }
+
+/** Where a take comes from: the default input, or everything the computer plays. */
+export type RecordingSource = "microphone" | "system";
 
 export interface InputDeviceInfo {
   sampleRate: number;
@@ -167,7 +186,30 @@ export type SynthVoice =
   | "timpani"
   | "glockenspiel"
   | "xylophone"
-  | "celesta";
+  | "celesta"
+  | "sitar"
+  | "sarod"
+  | "veena"
+  | "tanpura"
+  | "sarangi"
+  | "santoor"
+  | "bansuri"
+  | "shehnai"
+  | "harmonium"
+  | "tabla"
+  | "bayan"
+  | "mridangam"
+  | "dhol"
+  | "dholTilli"
+  | "dholak"
+  | "ghatam"
+  | "kanjira"
+  | "manjira"
+  | "ektara"
+  | "tumbi"
+  | "nadaswaram"
+  | "pungi"
+  | "shankh";
 
 export type RowSound =
   | { kind: "synth"; voice: SynthVoice }
@@ -199,6 +241,17 @@ export interface Pattern {
   /** 0 straight, 1 fully swung. */
   swing: number;
   rows: PatternRow[];
+  /**
+   * Stretches that play and gaps of silence, e.g. 2 bars, a 3-bar gap, 3 bars.
+   * Each playing stretch starts the rows from the top. Missing means the whole
+   * length plays; present, the sections add up to `bars`.
+   */
+  sections?: PatternSection[];
+}
+
+export interface PatternSection {
+  bars: number;
+  rest?: boolean;
 }
 
 /** A take saved as a file in the workspace, for a pattern row to play. */

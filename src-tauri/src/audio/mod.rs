@@ -3,6 +3,7 @@ pub mod edit;
 pub mod engine;
 pub mod encode;
 pub mod export;
+pub mod fx;
 pub mod master;
 pub mod pattern;
 pub mod peaks;

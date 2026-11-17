@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { cancelRecording, probeInputDevice, startRecording } from "../lib/api";
-import type { InputDeviceInfo } from "../types";
+import type { InputDeviceInfo, RecordingSource } from "../types";
+
+const SOURCE_KEY = "zwave.recordingSource";
+
+const SOURCES: { value: RecordingSource; label: string; title: string }[] = [
+  { value: "microphone", label: "Microphone", title: "The default input device" },
+  { value: "system", label: "System audio", title: "Everything the computer plays" },
+];
+
+function savedSource(): RecordingSource {
+  try {
+    return localStorage.getItem(SOURCE_KEY) === "system" ? "system" : "microphone";
+  } catch {
+    return "microphone";
+  }
+}
 
 interface Props {
   title?: string;
@@ -25,15 +40,31 @@ export function RecordingDialog({ title = "Record Audio", hint, onClose, onStop 
 
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [source, setSource] = useState<RecordingSource>(savedSource);
   const [deviceInfo, setDeviceInfo] = useState<InputDeviceInfo | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    probeInputDevice()
-      .then(setDeviceInfo)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, []);
+    let current = true;
+    setDeviceInfo(null);
+    setError(null);
+    probeInputDevice(source)
+      .then((info) => current && setDeviceInfo(info))
+      .catch((err) => current && setError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      current = false;
+    };
+  }, [source]);
+
+  const chooseSource = (next: RecordingSource) => {
+    setSource(next);
+    try {
+      localStorage.setItem(SOURCE_KEY, next);
+    } catch {
+      // Not remembered; still used for this take.
+    }
+  };
 
   useEffect(() => {
     if (!recording) return;
@@ -49,7 +80,7 @@ export function RecordingDialog({ title = "Record Audio", hint, onClose, onStop 
     try {
       setError(null);
       setStarting(true);
-      await startRecording();
+      await startRecording(source);
       if (closed.current) {
         void cancelRecording().catch(() => {});
         return;
@@ -96,10 +127,35 @@ export function RecordingDialog({ title = "Record Audio", hint, onClose, onStop 
           {error && <p className="modal__error">{error}</p>}
           {hint && <p className="recording-hint">{hint}</p>}
 
+          <div className="recording-source" role="radiogroup" aria-label="Record from">
+            {SOURCES.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={source === option.value}
+                className={`recording-source__option${
+                  source === option.value ? " recording-source__option--on" : ""
+                }`}
+                onClick={() => chooseSource(option.value)}
+                disabled={recording || starting}
+                title={option.title}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {source === "system" && (
+            <p className="recording-hint recording-hint--dim">
+              Records everything your computer plays, this app included. Start the sound once
+              recording has begun.
+            </p>
+          )}
+
           {deviceInfo && (
             <div className="recording-info">
               <p>
-                Input: {deviceInfo.channels} channel{deviceInfo.channels !== 1 ? "s" : ""} @{" "}
+                {source === "system" ? "System output" : "Input"}: {deviceInfo.channels} channel{deviceInfo.channels !== 1 ? "s" : ""} @{" "}
                 {deviceInfo.sampleRate} Hz
               </p>
               <p className="recording-time">{formatTime(elapsed)}</p>

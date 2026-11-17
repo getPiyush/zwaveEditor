@@ -19,7 +19,7 @@ pub fn run() {
         .manage(Clipboard::default())
         .manage(AudioEngine::new())
         .manage(StartupFiles::from_args())
-        .manage(Mutex::new(Recorder::new().unwrap_or_default()))
+        .manage(Mutex::new(Recorder::new()))
         .setup(|app| {
             // Until the user picks a workspace, it lives in their documents.
             let default_root = app

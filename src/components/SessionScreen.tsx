@@ -105,6 +105,7 @@ function sessionSnapshot(tracks: Track[], patterns: SavedPattern[]): string {
       track.inMaster,
       track.offset,
       track.patternId,
+      track.fx,
     ]),
     patterns,
   ]);

@@ -1,13 +1,14 @@
 //! Playback: one output stream that mixes every loaded track at a shared
 //! playhead, so all files play in parallel and stay in sync.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use super::decode::DecodedAudio;
+use super::fx::{FxState, TrackFx};
 use super::master::{Limiter, MasterBus};
 
 /// Length of the fade applied when starting and stopping, in seconds.
@@ -20,12 +21,38 @@ pub struct Track {
     pub muted: bool,
     /// Where the track starts on the session timeline, in seconds.
     pub offset_secs: f64,
+    /// Which clip this is, so its effect tails survive the mix being re-sent.
+    pub id: u64,
+    /// Reverb, delay, wet and dry; None plays the track as it is.
+    pub fx: Option<TrackFx>,
+    /// The effects' running state, filled in by `Mixer::set_tracks`.
+    fx_state: Option<Arc<Mutex<FxState>>>,
 }
 
 impl Track {
-    /// Where the track ends on the session timeline, in seconds.
+    pub fn new(audio: Arc<DecodedAudio>, gain: f32, muted: bool, offset_secs: f64) -> Self {
+        Self {
+            audio,
+            gain,
+            muted,
+            offset_secs,
+            id: 0,
+            fx: None,
+            fx_state: None,
+        }
+    }
+
+    pub fn with_fx(mut self, id: u64, fx: Option<TrackFx>) -> Self {
+        self.id = id;
+        self.fx = fx.map(TrackFx::sanitized).filter(TrackFx::is_active);
+        self
+    }
+
+    /// Where the track ends on the session timeline, in seconds, including
+    /// any reverb or echoes ringing on past its last sound.
     pub fn end_secs(&self) -> f64 {
-        self.offset_secs + self.audio.duration_secs()
+        let tail = self.fx.map(|fx| fx.tail_secs()).unwrap_or(0.0);
+        self.offset_secs + self.audio.duration_secs() + tail
     }
 }
 
@@ -60,10 +87,34 @@ pub struct Mixer {
     preview_playing: AtomicBool,
     /// Preview playhead in seconds, as `f64::to_bits`.
     preview_position_bits: AtomicU64,
+    /// The output device's rate, so effect lines are sized before playback.
+    output_rate: AtomicU32,
+    /// Bumped on every seek and play, telling effect tails from the old spot
+    /// to fall silent rather than ring on somewhere they don't belong.
+    fx_epoch: AtomicU64,
 }
 
 impl Mixer {
-    pub fn set_tracks(&self, tracks: Vec<Track>) {
+    pub fn set_tracks(&self, mut tracks: Vec<Track>) {
+        // A track keeps its effect state across updates, so moving a slider
+        // doesn't cut off a tail that is still ringing.
+        let old = self.tracks.load();
+        let rate = match self.output_rate.load(Ordering::Relaxed) {
+            0 => 48_000.0,
+            rate => rate as f64,
+        };
+        for track in tracks.iter_mut() {
+            if track.fx.is_none() {
+                continue;
+            }
+            let kept = old
+                .iter()
+                .find(|o| o.id == track.id && o.fx_state.is_some())
+                .and_then(|o| o.fx_state.clone());
+            track.fx_state =
+                Some(kept.unwrap_or_else(|| Arc::new(Mutex::new(FxState::new(rate)))));
+        }
+
         let duration = tracks
             .iter()
             .map(Track::end_secs)
@@ -83,6 +134,7 @@ impl Mixer {
             self.seek(0.0);
         }
         self.stop_bits.store(0, Ordering::Relaxed);
+        self.fx_epoch.fetch_add(1, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
@@ -92,6 +144,7 @@ impl Mixer {
             return self.play();
         }
         self.stop_bits.store(until.to_bits(), Ordering::Relaxed);
+        self.fx_epoch.fetch_add(1, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
@@ -130,6 +183,12 @@ impl Mixer {
         self.position_bits.store(clamped.to_bits(), Ordering::Relaxed);
         // Jumping elsewhere lets playback run on rather than stop at a selection's end.
         self.stop_bits.store(0, Ordering::Relaxed);
+        self.fx_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Tells the mixer the output device's rate, so effects are sized for it.
+    pub fn set_output_rate(&self, rate: u32) {
+        self.output_rate.store(rate, Ordering::Relaxed);
     }
 
     pub fn is_playing(&self) -> bool {
@@ -295,6 +354,7 @@ impl Mixer {
         };
         let mut position = self.position();
         let delta = 1.0 / rate;
+        let epoch = self.fx_epoch.load(Ordering::Relaxed);
 
         for frame in data.chunks_mut(out_channels.max(1)) {
             // Stopping mid-buffer fades out from the very frame playback ends on.
@@ -329,8 +389,24 @@ impl Mixer {
                 } else {
                     l
                 };
-                left += l * track.gain;
-                right += r * track.gain;
+                let (l, r) = (l * track.gain, r * track.gain);
+                // Only the audio thread locks the effect state, so this never waits.
+                let fx_state = track.fx_state.as_ref().and_then(|state| state.try_lock().ok());
+                let (l, r) = match (track.fx.as_ref(), fx_state) {
+                    (Some(fx), Some(mut state)) => {
+                        if state.rate() != rate {
+                            *state = FxState::new(rate);
+                        }
+                        if state.epoch != epoch {
+                            state.clear();
+                            state.epoch = epoch;
+                        }
+                        state.process(fx, l, r)
+                    }
+                    _ => (l, r),
+                };
+                left += l;
+                right += r;
             }
 
             left *= *ramp;
@@ -476,7 +552,8 @@ fn start_stream(mixer: Arc<Mixer>) -> Result<(cpal::Stream, u32), String> {
         .default_output_config()
         .map_err(|e| format!("could not read output device config: {e}"))?;
 
-    let sample_rate = config.sample_rate().0;
+    let sample_rate = config.sample_rate();
+    mixer.set_output_rate(sample_rate);
     let channels = config.channels() as usize;
     let sample_format = config.sample_format();
     let stream_config: cpal::StreamConfig = config.into();
@@ -488,7 +565,7 @@ fn start_stream(mixer: Arc<Mixer>) -> Result<(cpal::Stream, u32), String> {
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_output_stream(
-            &stream_config,
+            stream_config,
             move |data: &mut [f32], _| {
                 mixer.fill_with(data, channels, sample_rate as f64, &mut ramp, &mut limiter);
                 mixer.fill_preview(data, channels, sample_rate as f64, &mut preview_ramp);
@@ -499,7 +576,7 @@ fn start_stream(mixer: Arc<Mixer>) -> Result<(cpal::Stream, u32), String> {
         cpal::SampleFormat::I16 => {
             let mut scratch: Vec<f32> = Vec::new();
             device.build_output_stream(
-                &stream_config,
+                stream_config,
                 move |data: &mut [i16], _| {
                     scratch.resize(data.len(), 0.0);
                     mixer.fill_with(
@@ -543,6 +620,9 @@ mod tests {
             }),
             gain,
             muted: false,
+            id: 0,
+            fx: None,
+            fx_state: None,
             offset_secs: 0.0,
         }
     }
@@ -562,6 +642,48 @@ mod tests {
 
         assert!((data[0] - 0.5).abs() < 1e-4, "two tracks should sum: {}", data[0]);
         assert!((mixer.position() - 0.01).abs() < 1e-6, "480 frames at 48k = 10ms");
+    }
+
+    #[test]
+    fn effect_tails_lengthen_the_session_and_survive_a_new_mix() {
+        let echo = TrackFx {
+            reverb: 0.0,
+            delay: 0.01,
+            feedback: 0.0,
+            wet: 1.0,
+            dry: 1.0,
+        };
+        // A click: 1.0 for one frame, then 9 ms of silence.
+        let click = || {
+            let mut samples = vec![0.0f32; 480];
+            samples[0] = 1.0;
+            Track::new(
+                Arc::new(DecodedAudio {
+                    channels: vec![samples],
+                    sample_rate: 48_000,
+                    codec: "test".into(),
+                    bits_per_sample: None,
+                }),
+                1.0,
+                false,
+                0.0,
+            )
+            .with_fx(7, Some(echo))
+        };
+        let mixer = Mixer::default();
+        mixer.set_tracks(vec![click()]);
+        assert!(mixer.duration() > 0.01 + 0.009, "the echo rings past the clip");
+        mixer.play();
+
+        let mut ramp = 1.0;
+        let mut first = vec![0.0f32; 240 * 2];
+        mixer.fill(&mut first, 2, 48_000.0, &mut ramp);
+        // Re-sending the mix, as any slider move does, must not lose the echo.
+        mixer.set_tracks(vec![click()]);
+        let mut second = vec![0.0f32; 480 * 2];
+        mixer.fill(&mut second, 2, 48_000.0, &mut ramp);
+        // The echo of the click lands 10 ms in: frame 480, i.e. 240 into `second`.
+        assert!(second[240 * 2] > 0.9, "echo after a new mix: {}", second[240 * 2]);
     }
 
     #[test]
@@ -736,6 +858,9 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 offset_secs: 0.0,
+                id: 0,
+                fx: None,
+                fx_state: None,
             }
         };
 

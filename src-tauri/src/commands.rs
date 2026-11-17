@@ -8,9 +8,10 @@ use tauri::State;
 
 use crate::audio::engine::{AudioEngine, Preview, Track};
 use crate::audio::encode::{self, ExportFormat};
+use crate::audio::fx::TrackFx;
 use crate::audio::master::MasterBus;
 use crate::audio::pattern::{self, Pattern};
-use crate::audio::recording::{self, Recorder};
+use crate::audio::recording::{self, Recorder, RecordingSource};
 use crate::audio::{decode, edit, export, peaks, voice, ClipEntry, ClipStore, Clipboard};
 use crate::workspace::{self, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
 
@@ -71,6 +72,9 @@ pub struct TrackSetting {
     /// Where the track starts on the session timeline, in seconds.
     #[serde(default)]
     pub offset_secs: f64,
+    /// Reverb, delay, wet and dry.
+    #[serde(default)]
+    pub fx: Option<TrackFx>,
 }
 
 #[derive(Serialize)]
@@ -355,14 +359,14 @@ pub fn export_master(
             .ok_or_else(|| format!("clip {} is not open", setting.clip_id))?;
         // Render at the highest rate present, so nothing is downsampled.
         sample_rate = sample_rate.max(audio.sample_rate);
-        sources.push((audio, setting.gain, start_offset(setting.offset_secs)));
+        sources.push((audio, setting.gain, start_offset(setting.offset_secs), setting.fx));
     }
 
     if sources.is_empty() {
         return Err("no tracks are selected for the master".to_string());
     }
 
-    let rendered = export::render_master_with(&sources, sample_rate, master.unwrap_or_default());
+    let rendered = export::render_master_fx(&sources, sample_rate, master.unwrap_or_default());
     let path_buf = PathBuf::from(&path);
     encode::write_audio(&path_buf, &rendered, sample_rate, format)?;
     Ok(path)
@@ -381,12 +385,15 @@ pub fn set_mix(
         let audio = store
             .audio(setting.clip_id)
             .ok_or_else(|| format!("clip {} is not open", setting.clip_id))?;
-        resolved.push(Track {
-            audio,
-            gain: setting.gain.clamp(0.0, 4.0),
-            muted: setting.muted,
-            offset_secs: start_offset(setting.offset_secs),
-        });
+        resolved.push(
+            Track::new(
+                audio,
+                setting.gain.clamp(0.0, 4.0),
+                setting.muted,
+                start_offset(setting.offset_secs),
+            )
+            .with_fx(setting.clip_id, setting.fx),
+        );
     }
     engine.mixer.set_tracks(resolved);
     Ok(())
@@ -434,17 +441,20 @@ pub struct InputDeviceInfo {
 }
 
 #[tauri::command]
-pub fn probe_input_device(recorder: State<Mutex<Recorder>>) -> Result<InputDeviceInfo, String> {
-    let rec = recorder.lock().unwrap();
+pub fn probe_input_device(source: Option<RecordingSource>) -> Result<InputDeviceInfo, String> {
+    let format = Recorder::probe(source.unwrap_or_default())?;
     Ok(InputDeviceInfo {
-        sample_rate: rec.sample_rate(),
-        channels: rec.channel_count(),
+        sample_rate: format.sample_rate,
+        channels: format.channel_count,
     })
 }
 
 #[tauri::command]
-pub fn start_recording(recorder: State<Mutex<Recorder>>) -> Result<(), String> {
-    recorder.lock().unwrap().start()
+pub fn start_recording(
+    recorder: State<Mutex<Recorder>>,
+    source: Option<RecordingSource>,
+) -> Result<(), String> {
+    recorder.lock().unwrap().start(source.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -867,6 +877,8 @@ pub struct ProjectTrackSetting {
     pub offset_secs: f64,
     #[serde(default)]
     pub pattern_id: Option<String>,
+    #[serde(default)]
+    pub fx: Option<TrackFx>,
 }
 
 /// One track of a project that was opened, shaped like the UI's own `Track`.
@@ -881,6 +893,8 @@ pub struct OpenedTrack {
     pub offset: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fx: Option<TrackFx>,
 }
 
 /// A project that was opened: its tracks, and every pattern kept in it.
@@ -914,6 +928,7 @@ pub fn save_project(
                 in_master: setting.in_master,
                 offset_secs: start_offset(setting.offset_secs),
                 pattern_id: setting.pattern_id,
+                fx: setting.fx,
             },
             audio,
         ));
@@ -1022,6 +1037,7 @@ fn insert_project_track(store: &ClipStore, loaded: LoadedTrack) -> Result<Opened
         in_master: track.in_master,
         offset: start_offset(track.offset_secs),
         pattern_id: track.pattern_id,
+        fx: track.fx,
     })
 }
 
@@ -1048,10 +1064,13 @@ pub fn render_pattern(
 
 /// Loops a pattern on its own, outside the timeline, so it can be heard while
 /// it is edited. Calling it again swaps the loop without restarting it.
+/// Starting the loop pauses the session, so the two don't play over each other.
 #[tauri::command]
 pub fn preview_pattern(pattern: Pattern, engine: State<AudioEngine>) -> Result<(), String> {
-    let bars = pattern.bars.min(pattern::PREVIEW_BARS);
-    let audio = pattern::render(&Pattern { bars, ..pattern })?;
+    let audio = pattern::render(&pattern.truncated(pattern::PREVIEW_BARS))?;
+    if !engine.mixer.is_pattern_looping() {
+        engine.mixer.pause();
+    }
     engine.mixer.set_pattern_loop(Some(std::sync::Arc::new(audio)));
     Ok(())
 }

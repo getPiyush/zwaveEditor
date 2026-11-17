@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::decode::DecodedAudio;
 use super::engine::sample_at;
+use super::fx::{FxState, TrackFx};
 use super::master::{Limiter, MasterBus};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -72,6 +73,9 @@ pub fn write_wav(
 /// One track going into the master: its audio, gain and start offset in seconds.
 pub type MasterSource = (Arc<DecodedAudio>, f32, f64);
 
+/// A master source with its effects, if it has any.
+pub type FxSource = (Arc<DecodedAudio>, f32, f64, Option<TrackFx>);
+
 /// Sums tracks into one stereo buffer at `sample_rate`, exactly as the mixer
 /// would play them: each starting at its offset, resampled to the target rate.
 pub fn render_master(tracks: &[MasterSource], sample_rate: u32) -> Vec<Vec<f32>> {
@@ -84,30 +88,54 @@ pub fn render_master_with(
     sample_rate: u32,
     master: MasterBus,
 ) -> Vec<Vec<f32>> {
+    let sources: Vec<FxSource> = tracks
+        .iter()
+        .map(|(audio, gain, offset)| (Arc::clone(audio), *gain, *offset, None))
+        .collect();
+    render_master_fx(&sources, sample_rate, master)
+}
+
+/// `render_master_with`, running each track through its effects as playback
+/// does. The file runs on until the last reverb or echo has died away.
+pub fn render_master_fx(tracks: &[FxSource], sample_rate: u32, master: MasterBus) -> Vec<Vec<f32>> {
     let master = master.sanitized();
+    let tracks: Vec<FxSource> = tracks
+        .iter()
+        .map(|(audio, gain, offset, fx)| {
+            let fx = fx.map(TrackFx::sanitized).filter(TrackFx::is_active);
+            (Arc::clone(audio), *gain, *offset, fx)
+        })
+        .collect();
     let duration = tracks
         .iter()
-        .map(|(audio, _, offset)| offset + audio.duration_secs())
+        .map(|(audio, _, offset, fx)| {
+            offset + audio.duration_secs() + fx.map(|f| f.tail_secs()).unwrap_or(0.0)
+        })
         .fold(0.0f64, f64::max);
     let frames = (duration * sample_rate as f64).round() as usize;
 
     let mut left = vec![0.0f32; frames];
     let mut right = vec![0.0f32; frames];
 
-    for (audio, gain, offset) in tracks {
+    for (audio, gain, offset, fx) in &tracks {
         let source_rate = audio.sample_rate as f64;
+        let mut state = fx.map(|_| FxState::new(sample_rate as f64));
         // Nothing to read before the track starts.
         let first = ((offset * sample_rate as f64).floor() as usize).min(frames);
         for frame in first..frames {
             let position = (frame as f64 / sample_rate as f64 - offset) * source_rate;
-            let l = sample_at(&audio.channels[0], position);
+            let l = sample_at(&audio.channels[0], position) * gain;
             let r = if audio.channels.len() > 1 {
-                sample_at(&audio.channels[1], position)
+                sample_at(&audio.channels[1], position) * gain
             } else {
                 l
             };
-            left[frame] += l * gain;
-            right[frame] += r * gain;
+            let (l, r) = match (fx, state.as_mut()) {
+                (Some(fx), Some(state)) => state.process(fx, l, r),
+                _ => (l, r),
+            };
+            left[frame] += l;
+            right[frame] += r;
         }
     }
 
@@ -124,6 +152,28 @@ pub fn render_master_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effects_are_rendered_and_their_tail_is_kept() {
+        let echo = TrackFx {
+            reverb: 0.0,
+            delay: 0.5,
+            feedback: 0.0,
+            wet: 1.0,
+            dry: 1.0,
+        };
+        let click = Arc::new(DecodedAudio {
+            channels: vec![vec![0.5, 0.0, 0.0, 0.0]],
+            sample_rate: 1_000,
+            codec: "test".into(),
+            bits_per_sample: None,
+        });
+        let rendered = render_master_fx(&[(click, 1.0, 0.0, Some(echo))], 1_000, MasterBus::default());
+        // The clip is 4 ms, but the echo lands 500 ms in and the file runs past it.
+        assert!(rendered[0].len() > 500);
+        assert!((rendered[0][0] - 0.5).abs() < 1e-6);
+        assert!(rendered[0][500].abs() > 0.3, "echo: {}", rendered[0][500]);
+    }
 
     fn constant(value: f32, secs: f64, rate: u32) -> Arc<DecodedAudio> {
         let frames = (secs * rate as f64) as usize;
