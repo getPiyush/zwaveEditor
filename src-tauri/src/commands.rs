@@ -13,7 +13,7 @@ use crate::audio::master::MasterBus;
 use crate::audio::pattern::{self, Pattern};
 use crate::audio::recording::{self, Recorder, RecordingSource};
 use crate::audio::{decode, edit, export, peaks, voice, ClipEntry, ClipStore, Clipboard};
-use crate::workspace::{self, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
+use crate::workspace::{self, BeatTrack, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
 
 /// Everything the UI needs to describe an imported file.
 #[derive(Serialize)]
@@ -1039,6 +1039,76 @@ fn insert_project_track(store: &ClipStore, loaded: LoadedTrack) -> Result<Opened
         pattern_id: track.pattern_id,
         fx: track.fx,
     })
+}
+
+/// Writes the session's beats to a JSON file: every pattern, and the tracks
+/// made from them. No audio is written.
+#[tauri::command]
+pub fn export_beats(
+    path: String,
+    name: String,
+    tracks: Vec<BeatTrack>,
+    patterns: Vec<SavedPattern>,
+) -> Result<(), String> {
+    workspace::export_beats(Path::new(&path), &name, tracks, patterns)
+}
+
+/// Reads a beats file without rendering anything, so beats can be picked from it.
+#[tauri::command]
+pub fn read_beats(path: String) -> Result<workspace::BeatsFile, String> {
+    workspace::import_beats(Path::new(&path))
+}
+
+/// A beats file that was imported, ready to replace the session.
+#[derive(Serialize)]
+pub struct ImportedBeats {
+    pub name: String,
+    pub tracks: Vec<OpenedTrack>,
+    pub patterns: Vec<SavedPattern>,
+    /// Tracks that could not be rendered (a sample row whose file is not on
+    /// this machine, say), each with the reason. Their patterns still come in.
+    pub skipped: Vec<String>,
+}
+
+/// Reads a beats file and renders each of its tracks from its pattern.
+#[tauri::command(async)]
+pub fn import_beats(path: String, store: State<ClipStore>) -> Result<ImportedBeats, String> {
+    let file = workspace::import_beats(Path::new(&path))?;
+
+    let mut tracks = Vec::with_capacity(file.tracks.len());
+    let mut skipped = Vec::new();
+    for track in file.tracks {
+        let saved = file
+            .patterns
+            .iter()
+            .find(|p| p.id == track.pattern_id)
+            .expect("checked when the file was read");
+        let rendered = serde_json::from_value::<Pattern>(saved.pattern.clone())
+            .map_err(|e| e.to_string())
+            .and_then(|p| pattern::render(&p));
+        let audio = match rendered {
+            Ok(audio) => audio,
+            Err(e) => {
+                skipped.push(format!("{}: {e}", track.name));
+                continue;
+            }
+        };
+        let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+        let path = format!("pattern://{}", track.name);
+        let id = store.insert(audio, track.name, path, size);
+        tracks.push(OpenedTrack {
+            clip: store.with(id, |entry| clip_info(id, entry))?,
+            gain: track.gain,
+            muted: track.muted,
+            soloed: track.soloed,
+            in_master: track.in_master,
+            offset: start_offset(track.offset_secs),
+            pattern_id: Some(track.pattern_id),
+            fx: track.fx,
+        });
+    }
+
+    Ok(ImportedBeats { name: file.name, tracks, patterns: file.patterns, skipped })
 }
 
 /// Sets the master bus: gain on the summed mix, and whether to limit it.

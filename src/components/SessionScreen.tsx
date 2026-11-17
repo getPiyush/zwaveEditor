@@ -873,6 +873,13 @@ export function SessionScreen({
             setSelection(null);
             setLastEdited(null);
           }}
+          onImported={(beats) => {
+            onProjectOpened(beats);
+            // Named after the file, but not saved in the workspace until it is.
+            setProjectName(beats.name || null);
+            setSelection(null);
+            setLastEdited(null);
+          }}
           onClose={() => {
             setProjectDialog(null);
             setCloseAfterSave(false);
@@ -908,6 +915,12 @@ export function SessionScreen({
           currentProject={projectName}
           beatMode={!!beat}
           onProject={addFromProject}
+          onBeats={async (source, picked) => {
+            // One at a time, so names and kept patterns settle before the next.
+            for (const pattern of picked) {
+              await addFromProject({ kind: "beat", project: source || "beats file", pattern });
+            }
+          }}
           onClose={() => setShowAddTrack(false)}
         />
       )}

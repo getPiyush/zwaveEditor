@@ -285,6 +285,21 @@ export type ProjectItem =
   | { kind: "track"; project: string; track: ProjectTrackSummary; pattern?: SavedPattern }
   | { kind: "beat"; project: string; pattern: SavedPattern };
 
+/** A beats file as read, before anything is rendered. Mirrors `BeatsFile` in `workspace.rs`. */
+export interface BeatsFile {
+  /** The project name the file was exported under. */
+  name: string;
+  patterns: SavedPattern[];
+}
+
+/** What importing a beats file hands back, ready to replace the session. */
+export interface ImportedBeats extends OpenedProject {
+  /** The project name the file was exported under. */
+  name: string;
+  /** Tracks that could not be rendered here, each with the reason. */
+  skipped: string[];
+}
+
 /** What opening a project hands back, ready to replace the session. */
 export interface OpenedProject {
   tracks: Track[];

@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import {
   listProjects,
   listTunes,
+  pickBeatsFile,
+  readBeats,
   previewPause,
   previewPlay,
   previewPattern,
@@ -14,10 +16,12 @@ import {
 } from "../lib/api";
 import { formatTime } from "../lib/format";
 import type {
+  BeatsFile,
   PreviewState,
   ProjectContents,
   ProjectItem,
   ProjectSummary,
+  SavedPattern,
   TuneInfo,
 } from "../types";
 
@@ -40,6 +44,8 @@ interface Props {
   /** Beats (patterns) can only be rendered and edited in Beat mode. */
   beatMode: boolean;
   onProject: (item: ProjectItem) => Promise<void>;
+  /** Adds each beat as a track of its own, in order. `source` names where they came from. */
+  onBeats: (source: string, patterns: SavedPattern[]) => Promise<void>;
   onClose: () => void;
 }
 
@@ -55,6 +61,7 @@ export function AddTrackDialog({
   currentProject,
   beatMode,
   onProject,
+  onBeats,
   onClose,
 }: Props) {
   const [secondsDraft, setSecondsDraft] = useState(defaultSeconds.toFixed(1));
@@ -246,6 +253,58 @@ export function AddTrackDialog({
   const chooseTune = (path: string) => {
     setTunePath(path);
     if (previewing) previewPause().catch(() => {});
+  };
+
+  // A beats file picked to add beats from, and which of its beats are ticked.
+  const [beatsFile, setBeatsFile] = useState<BeatsFile | null>(null);
+  const [beatsFileError, setBeatsFileError] = useState<string | null>(null);
+  const [pickedBeats, setPickedBeats] = useState<Set<string>>(new Set());
+  const chosenBeats = beatsFile?.patterns.filter((p) => pickedBeats.has(p.id)) ?? [];
+  // Beat previews from the file are keyed apart from the project's.
+  const fileKey = (id: string) => `file:${id}`;
+
+  const chooseBeatsFile = async () => {
+    setBeatsFileError(null);
+    try {
+      const path = await pickBeatsFile();
+      if (!path) return;
+      const file = await readBeats(path);
+      if (beatPreviewId?.startsWith("file:")) {
+        await stopPatternPreview();
+        setBeatPreviewId(null);
+      }
+      setBeatsFile(file);
+      // Every beat starts ticked; untick the ones to leave behind.
+      setPickedBeats(new Set(file.patterns.map((p) => p.id)));
+    } catch (err) {
+      setBeatsFileError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const toggleBeat = (id: string) =>
+    setPickedBeats((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const toggleFileBeatPreview = async (saved: SavedPattern) => {
+    setBeatsFileError(null);
+    try {
+      if (beatPreviewId === fileKey(saved.id)) {
+        await stopPatternPreview();
+        setBeatPreviewId(null);
+        return;
+      }
+      // One thing at a time: silence the preview player first.
+      await previewPause();
+      setPreview((current) => current && { ...current, playing: false });
+      await previewPattern(saved.pattern);
+      setBeatPreviewId(fileKey(saved.id));
+    } catch (err) {
+      setBeatsFileError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const run = async (action: () => Promise<void>) => {
@@ -463,6 +522,103 @@ export function AddTrackDialog({
                 {processing && selectedItem ? "Adding…" : "Add from project"}
               </button>
             </section>
+
+            {beatMode && (
+              <section className="add-track__option">
+                <div>
+                  <h3>From a beats file (JSON)</h3>
+                  {beatsFile === null ? (
+                    <p>Pick one or more beats from a file made with Export beats (JSON).</p>
+                  ) : (
+                    <>
+                      <p>
+                        From {beatsFile.name || "a beats file"}. Each beat ticked becomes a track of
+                        its own, rendered at its own tempo and starting at the playhead.
+                      </p>
+                      <div className="add-track__beats-tools">
+                        <button
+                          type="button"
+                          className="btn btn--small"
+                          onClick={() =>
+                            setPickedBeats(
+                              chosenBeats.length === beatsFile.patterns.length
+                                ? new Set()
+                                : new Set(beatsFile.patterns.map((p) => p.id)),
+                            )
+                          }
+                          disabled={processing}
+                        >
+                          {chosenBeats.length === beatsFile.patterns.length
+                            ? "Select none"
+                            : "Select all"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--small"
+                          onClick={() => void chooseBeatsFile()}
+                          disabled={processing}
+                        >
+                          Other file…
+                        </button>
+                      </div>
+                      <ul className="add-track__beats">
+                        {beatsFile.patterns.map((p) => (
+                          <li key={p.id}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={pickedBeats.has(p.id)}
+                                onChange={() => toggleBeat(p.id)}
+                                disabled={processing}
+                              />
+                              <span>
+                                {p.name} · {p.pattern.bpm} BPM · {p.pattern.bars}{" "}
+                                {p.pattern.bars === 1 ? "bar" : "bars"}
+                              </span>
+                            </label>
+                            <button
+                              type="button"
+                              className="btn btn--small"
+                              onClick={() => void toggleFileBeatPreview(p)}
+                              disabled={processing}
+                              title={
+                                beatPreviewId === fileKey(p.id)
+                                  ? "Stop the preview"
+                                  : "Loop this beat before adding it"
+                              }
+                            >
+                              {beatPreviewId === fileKey(p.id) ? "Stop" : "Preview"}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  {beatsFileError && <p className="add-track__error">{beatsFileError}</p>}
+                </div>
+                {beatsFile === null ? (
+                  <button
+                    className="btn btn--primary"
+                    onClick={() => void chooseBeatsFile()}
+                    disabled={processing || isImporting}
+                  >
+                    Choose file…
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn--primary"
+                    onClick={() => void run(() => onBeats(beatsFile.name, chosenBeats))}
+                    disabled={processing || isImporting || chosenBeats.length === 0}
+                  >
+                    {processing
+                      ? "Adding…"
+                      : chosenBeats.length > 1
+                        ? `Add ${chosenBeats.length} beats`
+                        : "Add beat"}
+                  </button>
+                )}
+              </section>
+            )}
 
             <section className="add-track__option">
               <div>

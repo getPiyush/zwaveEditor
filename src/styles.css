@@ -2173,6 +2173,43 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.add-track__beats-tools {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.add-track__beats {
+  max-height: 180px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.add-track__beats li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.add-track__beats label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.add-track__beats label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .add-track__error {
   font-size: 11px;
   color: var(--danger);

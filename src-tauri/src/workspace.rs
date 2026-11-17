@@ -9,6 +9,9 @@
 //!     audio/track-01.wav      each track's audio, edits included
 //! ```
 //!
+//! A project's beats can also be exported on their own as one JSON file (see
+//! `BeatsFile`) and imported again, here or on another machine.
+//!
 //! Folders are created the first time something is written to them, so merely
 //! pointing at a workspace leaves the disk alone.
 
@@ -21,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::audio::decode::DecodedAudio;
 use crate::audio::export::{self, BitDepth};
 use crate::audio::fx::TrackFx;
+use crate::audio::pattern::Pattern;
 
 const TUNES_DIR: &str = "tunes";
 const PROJECTS_DIR: &str = "projects";
@@ -341,6 +345,106 @@ fn write_project(
     let text = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(PROJECT_FILE), text)
         .map_err(|e| format!("could not write the project file: {e}"))
+}
+
+/// What a beats file says it is, so any other JSON is turned away.
+pub const BEATS_FORMAT: &str = "zwaveEditor beats";
+const BEATS_VERSION: u32 = 1;
+/// A beats file is only grids and settings; anything this big is something else.
+const MAX_BEATS_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// One pattern track in a beats file: where it sits and how it is mixed. Its
+/// audio is not stored; it is rendered again from its pattern.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BeatTrack {
+    pub name: String,
+    pub pattern_id: String,
+    pub gain: f32,
+    pub muted: bool,
+    pub soloed: bool,
+    pub in_master: bool,
+    pub offset_secs: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<TrackFx>,
+}
+
+/// A project's beats as one JSON file: every pattern, and the tracks made from
+/// them. Tracks of plain audio are left out, so the file stays small and can
+/// be shared or kept in version control.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BeatsFile {
+    pub format: String,
+    pub version: u32,
+    pub name: String,
+    /// Seconds since the Unix epoch.
+    pub exported_at: u64,
+    pub tracks: Vec<BeatTrack>,
+    pub patterns: Vec<SavedPattern>,
+}
+
+/// Writes a project's beats to `path` as JSON.
+pub fn export_beats(
+    path: &Path,
+    name: &str,
+    tracks: Vec<BeatTrack>,
+    patterns: Vec<SavedPattern>,
+) -> Result<(), String> {
+    if patterns.is_empty() {
+        return Err("there are no beats to export".to_string());
+    }
+    let file = BeatsFile {
+        format: BEATS_FORMAT.to_string(),
+        version: BEATS_VERSION,
+        name: name.trim().to_string(),
+        exported_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        tracks,
+        patterns,
+    };
+    check_beats(&file)?;
+    let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    std::fs::write(path, text).map_err(|e| format!("could not write the beats file: {e}"))
+}
+
+/// Reads a beats file, checking that every grid in it can be played.
+pub fn import_beats(path: &Path) -> Result<BeatsFile, String> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("could not read the beats file: {e}"))?
+        .len();
+    if size > MAX_BEATS_FILE_BYTES {
+        return Err("that file is too big to be a beats file".to_string());
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not read the beats file: {e}"))?;
+    let file: BeatsFile = serde_json::from_str(&text)
+        .map_err(|e| format!("that is not a zwaveEditor beats file: {e}"))?;
+    if file.format != BEATS_FORMAT {
+        return Err("that is not a zwaveEditor beats file".to_string());
+    }
+    if file.version > BEATS_VERSION {
+        return Err("this file was exported by a newer version of zwaveEditor".to_string());
+    }
+    check_beats(&file)?;
+    Ok(file)
+}
+
+/// Every pattern must be a grid the renderer accepts, and every track must
+/// point at one of them.
+fn check_beats(file: &BeatsFile) -> Result<(), String> {
+    for saved in &file.patterns {
+        serde_json::from_value::<Pattern>(saved.pattern.clone())
+            .map_err(|e| format!("{}: the pattern is damaged: {e}", saved.name))?;
+    }
+    for track in &file.tracks {
+        if !file.patterns.iter().any(|p| p.id == track.pattern_id) {
+            return Err(format!("{}: its pattern is missing from the file", track.name));
+        }
+    }
+    Ok(())
 }
 
 /// Every project in `projects_dir`, most recently saved first.

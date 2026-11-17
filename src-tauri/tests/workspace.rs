@@ -197,3 +197,105 @@ fn a_project_saved_before_patterns_existed_still_opens() {
     let (project, _) = workspace::read_project(&projects, "old").unwrap();
     assert!(project.patterns.is_empty());
 }
+
+/// A pattern the renderer can play: a kick on the one.
+fn beat_pattern(id: &str) -> SavedPattern {
+    SavedPattern {
+        id: id.to_string(),
+        name: format!("Beat {id}"),
+        pattern: serde_json::json!({
+            "bpm": 90,
+            "bars": 1,
+            "swing": 0.2,
+            "rows": [{
+                "id": "row-1",
+                "sound": { "kind": "synth", "voice": "kick" },
+                "steps": [true, false, false, false],
+                "gain": 1, "note": 36, "choke": false, "muted": false
+            }],
+        }),
+    }
+}
+
+fn beat_track(name: &str, pattern_id: &str) -> workspace::BeatTrack {
+    workspace::BeatTrack {
+        name: name.to_string(),
+        pattern_id: pattern_id.to_string(),
+        gain: 0.8,
+        muted: false,
+        soloed: false,
+        in_master: true,
+        offset_secs: 2.5,
+        fx: None,
+    }
+}
+
+#[test]
+fn beats_export_to_json_and_import_again() {
+    let dir = test_dir("beats-round-trip");
+    let path = dir.join("song beats.json");
+
+    workspace::export_beats(
+        &path,
+        "  Song  ",
+        vec![beat_track("Beat 1 · 90 BPM", "a")],
+        vec![beat_pattern("a"), beat_pattern("b")],
+    )
+    .unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(workspace::BEATS_FORMAT));
+
+    let file = workspace::import_beats(&path).unwrap();
+    assert_eq!(file.name, "Song");
+    assert_eq!(file.patterns.len(), 2);
+    assert_eq!(file.patterns[0].pattern, beat_pattern("a").pattern);
+    assert_eq!(file.tracks.len(), 1);
+    assert_eq!(file.tracks[0].pattern_id, "a");
+    assert_eq!(file.tracks[0].offset_secs, 2.5);
+}
+
+#[test]
+fn beats_files_that_do_not_hold_together_are_refused() {
+    let dir = test_dir("beats-refused");
+    let path = dir.join("beats.json");
+
+    // Nothing to export.
+    assert!(workspace::export_beats(&path, "Song", vec![], vec![]).is_err());
+    // A track whose pattern is not in the file.
+    assert!(workspace::export_beats(
+        &path,
+        "Song",
+        vec![beat_track("Lost", "missing")],
+        vec![beat_pattern("a")]
+    )
+    .is_err());
+
+    // Some other JSON.
+    std::fs::write(&path, r#"{ "hello": "world" }"#).unwrap();
+    assert!(workspace::import_beats(&path).is_err());
+
+    // The right shape but another format name.
+    let mut doc = serde_json::json!({
+        "format": "something else",
+        "version": 1,
+        "name": "Song",
+        "exportedAt": 0,
+        "tracks": [],
+        "patterns": [beat_pattern("a")],
+    });
+    std::fs::write(&path, doc.to_string()).unwrap();
+    assert!(workspace::import_beats(&path).is_err());
+
+    // From a newer version.
+    doc["format"] = workspace::BEATS_FORMAT.into();
+    doc["version"] = 99.into();
+    std::fs::write(&path, doc.to_string()).unwrap();
+    assert!(workspace::import_beats(&path).unwrap_err().contains("newer"));
+
+    // A grid the renderer cannot read.
+    doc["version"] = 1.into();
+    doc["patterns"][0]["pattern"] = serde_json::json!({ "bpm": "fast" });
+    std::fs::write(&path, doc.to_string()).unwrap();
+    assert!(workspace::import_beats(&path).unwrap_err().contains("damaged"));
+}

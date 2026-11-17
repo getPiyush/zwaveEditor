@@ -10,6 +10,8 @@ import type {
   Pattern,
   PeakData,
   PreviewState,
+  BeatsFile,
+  ImportedBeats,
   OpenedProject,
   ProjectContents,
   ProjectSummary,
@@ -444,6 +446,54 @@ export function projectContents(name: string): Promise<ProjectContents> {
 /** Loads one track of a saved project as a new clip, staged as it was saved. */
 export function importProjectTrack(name: string, index: number): Promise<Track> {
   return invoke<Track>("import_project_track", { name, index });
+}
+
+/**
+ * Writes the session's beats to a JSON file: every pattern, and the tracks
+ * made from them, without any audio. Tracks of plain audio are left out.
+ */
+export function exportBeats(
+  path: string,
+  name: string,
+  tracks: Track[],
+  patterns: SavedPattern[],
+): Promise<void> {
+  return invoke("export_beats", {
+    path,
+    name,
+    tracks: tracks
+      .filter((track) => track.patternId !== undefined)
+      .map((track) => ({
+        name: track.clip.name,
+        patternId: track.patternId,
+        gain: track.gain,
+        muted: track.muted,
+        soloed: track.soloed,
+        inMaster: track.inMaster,
+        offsetSecs: track.offset,
+        fx: track.fx ?? null,
+      })),
+    patterns,
+  });
+}
+
+/** Asks for a beats file to import. Returns null if the user cancelled. */
+export async function pickBeatsFile(): Promise<string | null> {
+  const path = await open({
+    multiple: false,
+    filters: [{ name: "zwaveEditor beats", extensions: ["json"] }],
+  });
+  return typeof path === "string" ? path : null;
+}
+
+/** Reads a beats file's patterns without rendering them, to pick beats from. */
+export function readBeats(path: string): Promise<BeatsFile> {
+  return invoke<BeatsFile>("read_beats", { path });
+}
+
+/** Reads a beats file and renders its tracks, ready to replace the session. */
+export function importBeats(path: string): Promise<ImportedBeats> {
+  return invoke<ImportedBeats>("import_beats", { path });
 }
 
 /**
