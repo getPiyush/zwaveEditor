@@ -154,3 +154,27 @@ fn a_failed_edit_leaves_the_clip_untouched() {
 
     std::fs::remove_file(&source).ok();
 }
+
+#[test]
+fn a_stem_mixdown_sums_tracks_at_their_offsets_without_clipping() {
+    use std::sync::Arc;
+    use zwave_editor_lib::audio::decode::DecodedAudio;
+    use zwave_editor_lib::audio::export::mix_fx;
+
+    let tone = |value: f32, frames: usize| {
+        Arc::new(DecodedAudio {
+            channels: vec![vec![value; frames]],
+            sample_rate: 100,
+            codec: "test".into(),
+            bits_per_sample: None,
+        })
+    };
+    // Two loud tracks overlapping for half a second, the second starting at 0.5 s.
+    let [left, right] = mix_fx(&[(tone(0.8, 100), 1.0, 0.0, None), (tone(0.8, 100), 1.0, 0.5, None)], 100);
+
+    assert_eq!(left.len(), 150, "runs until the later track ends");
+    assert!((left[10] - 0.8).abs() < 1e-6);
+    assert!((left[75] - 1.6).abs() < 1e-6, "kept above full scale, not clipped");
+    assert!((left[140] - 0.8).abs() < 1e-6);
+    assert_eq!(left, right, "mono tracks play in both channels");
+}

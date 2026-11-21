@@ -99,6 +99,22 @@ pub fn render_master_with(
 /// does. The file runs on until the last reverb or echo has died away.
 pub fn render_master_fx(tracks: &[FxSource], sample_rate: u32, master: MasterBus) -> Vec<Vec<f32>> {
     let master = master.sanitized();
+    let [mut left, mut right] = mix_fx(tracks, sample_rate);
+
+    let mut limiter = Limiter::new(sample_rate as f64);
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let (bl, br) = master.apply(*l, *r, &mut limiter);
+        *l = bl.clamp(-1.0, 1.0);
+        *r = br.clamp(-1.0, 1.0);
+    }
+
+    vec![left, right]
+}
+
+/// Sums the tracks, each through its effects, into one stereo pair at
+/// `sample_rate`, with no master bus and no clipping: a stem's mixdown keeps
+/// its peaks, so its own track volume can still bring them down.
+pub fn mix_fx(tracks: &[FxSource], sample_rate: u32) -> [Vec<f32>; 2] {
     let tracks: Vec<FxSource> = tracks
         .iter()
         .map(|(audio, gain, offset, fx)| {
@@ -139,14 +155,7 @@ pub fn render_master_fx(tracks: &[FxSource], sample_rate: u32, master: MasterBus
         }
     }
 
-    let mut limiter = Limiter::new(sample_rate as f64);
-    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-        let (bl, br) = master.apply(*l, *r, &mut limiter);
-        *l = bl.clamp(-1.0, 1.0);
-        *r = br.clamp(-1.0, 1.0);
-    }
-
-    vec![left, right]
+    [left, right]
 }
 
 #[cfg(test)]

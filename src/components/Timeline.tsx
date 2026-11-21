@@ -86,6 +86,8 @@ interface Props {
   beat?: BeatSettings;
   /** Beat mode only: reopens a track made in the pattern editor. */
   onTrackEditPattern?: (clipId: number) => void;
+  /** Opens a stem track to work on the tracks inside it. */
+  onTrackOpenStem?: (clipId: number) => void;
   onTrackReorder: (from: number, slot: number) => void;
 }
 
@@ -112,6 +114,7 @@ export function Timeline({
   tuneDrop,
   beat,
   onTrackEditPattern,
+  onTrackOpenStem,
   onTrackReorder,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -449,6 +452,11 @@ export function Timeline({
                 onEditPattern={
                   onTrackEditPattern && track.patternId
                     ? () => onTrackEditPattern(track.clip.id)
+                    : undefined
+                }
+                onOpenStem={
+                  onTrackOpenStem && track.stemId
+                    ? () => onTrackOpenStem(track.clip.id)
                     : undefined
                 }
               />

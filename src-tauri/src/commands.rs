@@ -13,7 +13,10 @@ use crate::audio::master::MasterBus;
 use crate::audio::pattern::{self, Pattern};
 use crate::audio::recording::{self, Recorder, RecordingSource};
 use crate::audio::{decode, edit, export, peaks, voice, ClipEntry, ClipStore, Clipboard};
-use crate::workspace::{self, BeatTrack, ProjectSummary, ProjectTrack, SavedPattern, TuneInfo, Workspace};
+use crate::workspace::{
+    self, BeatTrack, ProjectStem, ProjectSummary, ProjectTrack, SavedPattern, StemToSave, TuneInfo,
+    Workspace,
+};
 
 /// Everything the UI needs to describe an imported file.
 #[derive(Serialize)]
@@ -370,6 +373,44 @@ pub fn export_master(
     let path_buf = PathBuf::from(&path);
     encode::write_audio(&path_buf, &rendered, sample_rate, format)?;
     Ok(path)
+}
+
+/// Mixes tracks down into a new clip: the audio of a stem. Each track plays
+/// through its volume and effects, from its offset; a muted track adds
+/// nothing but still counts towards the length, so muting a track inside a
+/// stem never moves where the stem ends. Long mixes take a while, so this
+/// stays off the UI thread.
+#[tauri::command(async)]
+pub fn render_mix(
+    tracks: Vec<TrackSetting>,
+    name: String,
+    store: State<ClipStore>,
+) -> Result<ClipInfo, String> {
+    if tracks.is_empty() {
+        return Err("a stem needs at least one track".to_string());
+    }
+    let mut sources = Vec::with_capacity(tracks.len());
+    let mut sample_rate = 0;
+    for setting in tracks {
+        let audio = store
+            .audio(setting.clip_id)
+            .ok_or_else(|| format!("clip {} is not open", setting.clip_id))?;
+        // Mix at the highest rate present, so nothing is downsampled.
+        sample_rate = sample_rate.max(audio.sample_rate);
+        let gain = if setting.muted { 0.0 } else { setting.gain.clamp(0.0, 4.0) };
+        sources.push((audio, gain, start_offset(setting.offset_secs), setting.fx));
+    }
+
+    let audio = decode::DecodedAudio {
+        channels: export::mix_fx(&sources, sample_rate).into(),
+        sample_rate,
+        codec: "stem".into(),
+        bits_per_sample: None,
+    };
+    let size = (audio.frame_count() * audio.channel_count() * 4) as u64;
+    let name = if name.trim().is_empty() { "Stem".to_string() } else { name };
+    let id = store.insert(audio, name.clone(), format!("stem://{name}"), size);
+    store.with(id, |entry| clip_info(id, entry))
 }
 
 /// Replaces the whole mix. The UI sends the full track list whenever anything
@@ -879,6 +920,17 @@ pub struct ProjectTrackSetting {
     pub pattern_id: Option<String>,
     #[serde(default)]
     pub fx: Option<TrackFx>,
+    #[serde(default)]
+    pub stem_id: Option<String>,
+}
+
+/// A stem in a project being saved: the tracks its track was mixed from.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StemSetting {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<ProjectTrackSetting>,
 }
 
 /// One track of a project that was opened, shaped like the UI's own `Track`.
@@ -895,13 +947,24 @@ pub struct OpenedTrack {
     pub pattern_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fx: Option<TrackFx>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_id: Option<String>,
 }
 
-/// A project that was opened: its tracks, and every pattern kept in it.
+/// A stem of a project that was opened, its tracks loaded as clips.
+#[derive(Serialize)]
+pub struct OpenedStem {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<OpenedTrack>,
+}
+
+/// A project that was opened: its tracks, every pattern kept in it, and its stems.
 #[derive(Serialize)]
 pub struct OpenedProject {
     pub tracks: Vec<OpenedTrack>,
     pub patterns: Vec<SavedPattern>,
+    pub stems: Vec<OpenedStem>,
 }
 
 /// Saves the session into the workspace as a project. Returns its folder.
@@ -910,9 +973,38 @@ pub fn save_project(
     name: String,
     tracks: Vec<ProjectTrackSetting>,
     patterns: Vec<SavedPattern>,
+    stems: Option<Vec<StemSetting>>,
     workspace: State<Workspace>,
     store: State<ClipStore>,
 ) -> Result<String, String> {
+    let resolved = resolve_project_tracks(&store, tracks)?;
+    let stems = stems
+        .unwrap_or_default()
+        .into_iter()
+        .map(|stem| {
+            Ok(StemToSave {
+                id: stem.id,
+                name: stem.name,
+                tracks: resolve_project_tracks(&store, stem.tracks)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let dir = workspace::save_project_with_stems(
+        &workspace.projects_dir(),
+        &name,
+        resolved,
+        patterns,
+        stems,
+    )?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Pairs each staged track with its clip's audio and name, ready to write.
+fn resolve_project_tracks(
+    store: &ClipStore,
+    tracks: Vec<ProjectTrackSetting>,
+) -> Result<Vec<(ProjectTrack, std::sync::Arc<decode::DecodedAudio>)>, String> {
     let mut resolved = Vec::with_capacity(tracks.len());
     for setting in tracks {
         let (audio, track_name) = store.with(setting.clip_id, |entry| {
@@ -929,13 +1021,12 @@ pub fn save_project(
                 offset_secs: start_offset(setting.offset_secs),
                 pattern_id: setting.pattern_id,
                 fx: setting.fx,
+                stem_id: setting.stem_id,
             },
             audio,
         ));
     }
-
-    let dir = workspace::save_project(&workspace.projects_dir(), &name, resolved, patterns)?;
-    Ok(dir.to_string_lossy().to_string())
+    Ok(resolved)
 }
 
 #[tauri::command]
@@ -953,17 +1044,33 @@ pub fn open_project(
     let (project, dir) = workspace::read_project(&workspace.projects_dir(), &name)?;
     let patterns = project.patterns;
 
-    let mut decoded = Vec::with_capacity(project.tracks.len());
-    for track in project.tracks {
-        decoded.push(decode_project_track(&dir, track)?);
-    }
-
-    let tracks = decoded
+    // Decode everything before opening anything, so a bad file opens nothing.
+    let decode_all = |tracks: Vec<ProjectTrack>| {
+        tracks
+            .into_iter()
+            .map(|track| decode_project_track(&dir, track))
+            .collect::<Result<Vec<_>, String>>()
+    };
+    let decoded = decode_all(project.tracks)?;
+    let decoded_stems = project
+        .stems
         .into_iter()
-        .map(|loaded| insert_project_track(&store, loaded))
+        .map(|ProjectStem { id, name, tracks }| Ok((id, name, decode_all(tracks)?)))
         .collect::<Result<Vec<_>, String>>()?;
 
-    Ok(OpenedProject { tracks, patterns })
+    let insert_all = |decoded: Vec<LoadedTrack>| {
+        decoded
+            .into_iter()
+            .map(|loaded| insert_project_track(&store, loaded))
+            .collect::<Result<Vec<_>, String>>()
+    };
+    let tracks = insert_all(decoded)?;
+    let stems = decoded_stems
+        .into_iter()
+        .map(|(id, name, decoded)| Ok(OpenedStem { id, name, tracks: insert_all(decoded)? }))
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(OpenedProject { tracks, patterns, stems })
 }
 
 /// One track of a saved project, as listed before any audio is loaded.
@@ -1014,7 +1121,10 @@ pub fn import_project_track(
         .into_iter()
         .nth(index)
         .ok_or_else(|| format!("{name} has no track {}", index + 1))?;
-    insert_project_track(&store, decode_project_track(&dir, track)?)
+    // One track comes as audio; the stem it was mixed from stays behind.
+    let mut opened = insert_project_track(&store, decode_project_track(&dir, track)?)?;
+    opened.stem_id = None;
+    Ok(opened)
 }
 
 type LoadedTrack = (ProjectTrack, decode::DecodedAudio, PathBuf, u64);
@@ -1038,6 +1148,7 @@ fn insert_project_track(store: &ClipStore, loaded: LoadedTrack) -> Result<Opened
         offset: start_offset(track.offset_secs),
         pattern_id: track.pattern_id,
         fx: track.fx,
+        stem_id: track.stem_id,
     })
 }
 
@@ -1105,6 +1216,7 @@ pub fn import_beats(path: String, store: State<ClipStore>) -> Result<ImportedBea
             offset: start_offset(track.offset_secs),
             pattern_id: Some(track.pattern_id),
             fx: track.fx,
+            stem_id: None,
         });
     }
 

@@ -16,6 +16,7 @@ import {
 } from "../lib/api";
 import { formatTime } from "../lib/format";
 import type {
+  BeatTrack,
   BeatsFile,
   PreviewState,
   ProjectContents,
@@ -44,8 +45,18 @@ interface Props {
   /** Beats (patterns) can only be rendered and edited in Beat mode. */
   beatMode: boolean;
   onProject: (item: ProjectItem) => Promise<void>;
-  /** Adds each beat as a track of its own, in order. `source` names where they came from. */
-  onBeats: (source: string, patterns: SavedPattern[]) => Promise<void>;
+  /**
+   * Adds each beat as a track of its own, in order, or, given a `stemName`,
+   * all of them mixed down into one stem track. `source` names where they came from.
+   */
+  onBeats: (
+    source: string,
+    patterns: SavedPattern[],
+    stemName: string | null,
+    tracks: BeatTrack[],
+  ) => Promise<void>;
+  /** What a stem made from beats is called unless renamed. */
+  defaultStemName: string;
   onClose: () => void;
 }
 
@@ -62,6 +73,7 @@ export function AddTrackDialog({
   beatMode,
   onProject,
   onBeats,
+  defaultStemName,
   onClose,
 }: Props) {
   const [secondsDraft, setSecondsDraft] = useState(defaultSeconds.toFixed(1));
@@ -87,7 +99,7 @@ export function AddTrackDialog({
   const [projectName, setProjectName] = useState("");
   const [contents, setContents] = useState<ProjectContents | null>(null);
   const [contentsError, setContentsError] = useState<string | null>(null);
-  // "track:<index>" or "beat:<pattern id>".
+  // "track:<index>", "beat:<pattern id>", or "stem:" for the whole project.
   const [itemKey, setItemKey] = useState("");
 
   useEffect(() => {
@@ -136,6 +148,7 @@ export function AddTrackDialog({
       const pattern = contents.patterns.find((p) => p.id === track.patternId);
       return { kind: "track", project: projectName, track, pattern };
     }
+    if (kind === "stem") return contents.tracks.length > 0 ? { kind: "stem", project: projectName } : null;
     const pattern = contents.patterns.find((p) => p.id === id);
     return kind === "beat" && pattern ? { kind: "beat", project: projectName, pattern } : null;
   };
@@ -175,7 +188,8 @@ export function AddTrackDialog({
   useEffect(() => () => void stopPatternPreview().catch(() => {}), []);
 
   const toggleItemPreview = async () => {
-    if (!selectedItem) return;
+    // A whole project has no single sound to preview.
+    if (!selectedItem || selectedItem.kind === "stem" || selectedItem.kind === "beatsStem") return;
     setItemPreviewError(null);
     try {
       if (itemPreviewing) {
@@ -260,6 +274,9 @@ export function AddTrackDialog({
   const [beatsFileError, setBeatsFileError] = useState<string | null>(null);
   const [pickedBeats, setPickedBeats] = useState<Set<string>>(new Set());
   const chosenBeats = beatsFile?.patterns.filter((p) => pickedBeats.has(p.id)) ?? [];
+  // Add the ticked beats mixed down into one stem track instead of a track each.
+  const [beatsAsStem, setBeatsAsStem] = useState(false);
+  const [beatsStemName, setBeatsStemName] = useState("");
   // Beat previews from the file are keyed apart from the project's.
   const fileKey = (id: string) => `file:${id}`;
 
@@ -274,6 +291,7 @@ export function AddTrackDialog({
         setBeatPreviewId(null);
       }
       setBeatsFile(file);
+      setBeatsStemName(file.name || defaultStemName);
       // Every beat starts ticked; untick the ones to leave behind.
       setPickedBeats(new Set(file.patterns.map((p) => p.id)));
     } catch (err) {
@@ -432,7 +450,7 @@ export function AddTrackDialog({
                   <>
                     <p>
                       {beatMode
-                        ? "A track comes as it was saved; a beat is rendered fresh at its own tempo and can be edited here."
+                        ? "A track comes as it was saved; a beat is rendered fresh at its own tempo and can be edited here. The whole project can come as one stem track, which you can open with ⧉."
                         : "A track comes as it was saved, edits and all."}{" "}
                       It starts at the playhead.
                     </p>
@@ -465,6 +483,14 @@ export function AddTrackDialog({
                           disabled={processing}
                           aria-label="Track or beat"
                         >
+                          {beatMode && contents.tracks.length > 0 && (
+                            <optgroup label="Whole project">
+                              <option value="stem:">
+                                All {contents.tracks.length}{" "}
+                                {contents.tracks.length === 1 ? "track" : "tracks"}, as one stem
+                              </option>
+                            </optgroup>
+                          )}
                           {contents.tracks.length > 0 && (
                             <optgroup label="Tracks">
                               {contents.tracks.map((t) => (
@@ -485,7 +511,7 @@ export function AddTrackDialog({
                           )}
                         </select>
                       )}
-                      {selectedItem && (
+                      {selectedItem && selectedItem.kind !== "stem" && (
                         <button
                           type="button"
                           className="btn btn--small"
@@ -532,8 +558,10 @@ export function AddTrackDialog({
                   ) : (
                     <>
                       <p>
-                        From {beatsFile.name || "a beats file"}. Each beat ticked becomes a track of
-                        its own, rendered at its own tempo and starting at the playhead.
+                        From {beatsFile.name || "a beats file"}.{" "}
+                        {beatsAsStem
+                          ? "The beats ticked are rendered and mixed down into one stem track at the playhead; open it with ⧉ to work on each beat."
+                          : "Each beat ticked becomes a track of its own, rendered at its own tempo and starting at the playhead."}
                       </p>
                       <div className="add-track__beats-tools">
                         <button
@@ -592,6 +620,28 @@ export function AddTrackDialog({
                           </li>
                         ))}
                       </ul>
+                      <label className="add-track__stem-toggle">
+                        <input
+                          type="checkbox"
+                          checked={beatsAsStem}
+                          onChange={(e) => setBeatsAsStem(e.target.checked)}
+                          disabled={processing}
+                        />
+                        Add as one stem
+                      </label>
+                      {beatsAsStem && (
+                        <label className="stem-dialog__name">
+                          Name
+                          <input
+                            type="text"
+                            value={beatsStemName}
+                            onChange={(e) => setBeatsStemName(e.target.value)}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            disabled={processing}
+                            aria-label="Stem name"
+                          />
+                        </label>
+                      )}
                     </>
                   )}
                   {beatsFileError && <p className="add-track__error">{beatsFileError}</p>}
@@ -607,12 +657,23 @@ export function AddTrackDialog({
                 ) : (
                   <button
                     className="btn btn--primary"
-                    onClick={() => void run(() => onBeats(beatsFile.name, chosenBeats))}
+                    onClick={() =>
+                      void run(() =>
+                        onBeats(
+                          beatsFile.name,
+                          chosenBeats,
+                          beatsAsStem ? beatsStemName.trim() || defaultStemName : null,
+                          beatsFile.tracks ?? [],
+                        ),
+                      )
+                    }
                     disabled={processing || isImporting || chosenBeats.length === 0}
                   >
                     {processing
                       ? "Adding…"
-                      : chosenBeats.length > 1
+                      : beatsAsStem
+                        ? "Add as stem"
+                        : chosenBeats.length > 1
                         ? `Add ${chosenBeats.length} beats`
                         : "Add beat"}
                   </button>

@@ -191,43 +191,122 @@ button:disabled {
 }
 
 .session__header {
+  position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
+  gap: 12px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
+.session__header--beat {
+  background: linear-gradient(90deg, rgba(232, 163, 61, 0.07), transparent 60%), var(--surface);
+}
+
+/* The beat controls share the header row instead of drawing a bar of their own. */
+.session__header .beatbar {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border-bottom: none;
+  background: none;
+}
+
 .session__title {
-  margin: 0;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .session__meta {
-  margin: 2px 0 0;
   color: var(--text-dim);
   font-size: 12px;
+  line-height: 1.45;
 }
 
-.session__actions {
-  display: flex;
-  gap: 8px;
+/* ---------- Menu ---------- */
+
+.menu {
+  position: relative;
   flex-shrink: 0;
 }
 
-.session__tunes {
+.menu__button {
   display: flex;
   align-items: center;
-  padding: 7px 10px;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  padding: 0;
 }
 
-.session__tunes--on {
+.menu__button--open {
   border-color: var(--accent);
   color: var(--accent-soft);
+}
+
+.menu__list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 240px;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.menu__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.menu__group + .menu__group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 7px 10px 7px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.menu__item:hover:not(:disabled),
+.menu__item:focus-visible {
+  background: rgba(61, 139, 253, 0.14);
+}
+
+.menu__item:disabled {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.menu__item--danger:not(:disabled) {
+  color: var(--danger);
+}
+
+.menu__check {
+  display: inline-block;
+  width: 20px;
+  flex-shrink: 0;
+  color: var(--accent-soft);
+  text-align: center;
 }
 
 .session__error {
@@ -249,10 +328,46 @@ button:disabled {
 
 .transport {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 8px 24px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.transport__section {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.transport__section + .transport__section {
+  padding-left: 24px;
+  border-left: 1px solid var(--border);
+}
+
+.transport__label {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+.transport__close {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.transport__close:hover {
+  color: var(--text);
 }
 
 .transport__buttons {
@@ -267,6 +382,16 @@ button:disabled {
   width: 38px;
   height: 32px;
   padding: 0;
+}
+
+/* The play and stop pair in the session header, beside the menu. */
+.session__transport {
+  flex-shrink: 0;
+}
+
+.session__transport button {
+  width: 32px;
+  height: 28px;
 }
 
 .transport__play {
@@ -316,10 +441,6 @@ button:disabled {
 .transport__duration {
   color: var(--text-dim);
   font-size: 12px;
-}
-
-.transport__spacer {
-  flex: 1;
 }
 
 .transport__error {
@@ -2210,6 +2331,15 @@ button:disabled {
   white-space: nowrap;
 }
 
+.add-track__stem-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .add-track__error {
   font-size: 11px;
   color: var(--danger);
@@ -2252,4 +2382,90 @@ button:disabled {
 .add-track__length input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* ----- Stems: tracks mixed down into one track, opened with ⧉ ----- */
+
+.beatbar__stem {
+  border-color: rgba(120, 200, 190, 0.5);
+  color: #9fe3d8;
+}
+
+.track__stem {
+  color: #9fe3d8;
+}
+
+.stembar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(120, 200, 190, 0.08);
+  font-size: 13px;
+}
+
+.stembar button {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.stembar__crumb {
+  background: transparent;
+  border-color: transparent;
+  color: #9fe3d8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.stembar__sep {
+  color: var(--text-dim, #8a94a6);
+}
+
+.stembar__current {
+  color: #9fe3d8;
+}
+
+.stembar__note {
+  margin-left: auto;
+  color: var(--text-dim, #8a94a6);
+  font-size: 12px;
+}
+
+.stem-dialog p {
+  margin: 0 0 10px;
+}
+
+.stem-dialog__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.stem-dialog__name input {
+  flex: 1;
+}
+
+.stem-dialog__tracks {
+  max-height: 260px;
+}
+
+.stem-dialog__meta,
+.stem-dialog__hint {
+  color: var(--text-dim, #8a94a6);
+  font-size: 12px;
+}
+
+.stem-dialog__meta {
+  white-space: nowrap;
+}
+
+.stem-dialog__hint {
+  margin-top: 10px;
+}
+
+.stem-dialog__buttons {
+  gap: 8px;
 }

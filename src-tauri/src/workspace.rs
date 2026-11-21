@@ -7,7 +7,12 @@
 //!   projects/<name>/
 //!     project.json            the track list and mixer settings
 //!     audio/track-01.wav      each track's audio, edits included
+//!     audio/stem-01-track-01.wav  the tracks inside each stem
 //! ```
+//!
+//! A stem is a track made by mixing other tracks together. The stem's own
+//! mixdown is saved like any track; the tracks it was made from are saved
+//! with it, so it can be opened and changed again.
 //!
 //! A project's beats can also be exported on their own as one JSON file (see
 //! `BeatsFile`) and imported again, here or on another machine.
@@ -227,6 +232,26 @@ pub struct ProjectTrack {
     /// Reverb, delay, wet and dry, if the track has any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx: Option<TrackFx>,
+    /// The stem this track is the mixdown of, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stem_id: Option<String>,
+}
+
+/// A stem kept in a project: the tracks its track was mixed from. Offsets are
+/// from the start of the stem. A track inside may be a stem itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStem {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<ProjectTrack>,
+}
+
+/// A stem being saved: its tracks, each with the audio to write.
+pub struct StemToSave {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
 }
 
 /// A pattern kept in a project. The grid belongs to the UI, so it is stored as
@@ -248,6 +273,10 @@ pub struct ProjectFile {
     /// Every pattern made in the project; projects saved before these existed have none.
     #[serde(default)]
     pub patterns: Vec<SavedPattern>,
+    /// Every stem in the project, nested ones included. Projects saved before
+    /// stems existed have none, and older versions of the app skip them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stems: Vec<ProjectStem>,
 }
 
 /// A saved project, as the open dialog lists it.
@@ -287,6 +316,17 @@ pub fn save_project(
     tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
     patterns: Vec<SavedPattern>,
 ) -> Result<PathBuf, String> {
+    save_project_with_stems(projects_dir, name, tracks, patterns, Vec::new())
+}
+
+/// `save_project`, also writing the tracks inside each stem.
+pub fn save_project_with_stems(
+    projects_dir: &Path,
+    name: &str,
+    tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
+    patterns: Vec<SavedPattern>,
+    stems: Vec<StemToSave>,
+) -> Result<PathBuf, String> {
     if tracks.is_empty() && patterns.is_empty() {
         return Err("there are no tracks to save".to_string());
     }
@@ -300,7 +340,7 @@ pub fn save_project(
     std::fs::create_dir_all(staging.join("audio"))
         .map_err(|e| format!("could not create the project folder: {e}"))?;
 
-    let written = write_project(&staging, tracks, patterns).and_then(|()| {
+    let written = write_project(&staging, tracks, patterns, stems).and_then(|()| {
         if target.exists() {
             std::fs::remove_dir_all(&target)
                 .map_err(|e| format!("could not replace the old project: {e}"))?;
@@ -318,10 +358,46 @@ fn write_project(
     dir: &Path,
     tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
     patterns: Vec<SavedPattern>,
+    stems: Vec<StemToSave>,
 ) -> Result<(), String> {
+    let saved = write_tracks(dir, "audio/track", tracks)?;
+    let stems = stems
+        .into_iter()
+        .enumerate()
+        .map(|(index, stem)| {
+            let prefix = format!("audio/stem-{:02}-track", index + 1);
+            Ok(ProjectStem {
+                id: stem.id,
+                name: stem.name,
+                tracks: write_tracks(dir, &prefix, stem.tracks)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let project = ProjectFile {
+        version: PROJECT_VERSION,
+        saved_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        tracks: saved,
+        patterns,
+        stems,
+    };
+    let text = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(PROJECT_FILE), text)
+        .map_err(|e| format!("could not write the project file: {e}"))
+}
+
+/// Writes each track's audio as `<prefix>-NN.wav`, filling in `file`.
+fn write_tracks(
+    dir: &Path,
+    prefix: &str,
+    tracks: Vec<(ProjectTrack, Arc<DecodedAudio>)>,
+) -> Result<Vec<ProjectTrack>, String> {
     let mut saved = Vec::with_capacity(tracks.len());
     for (index, (mut track, audio)) in tracks.into_iter().enumerate() {
-        track.file = format!("audio/track-{:02}.wav", index + 1);
+        track.file = format!("{prefix}-{:02}.wav", index + 1);
         // Float keeps the samples exactly as they are in memory.
         export::write_wav(
             &dir.join(&track.file),
@@ -332,19 +408,7 @@ fn write_project(
         .map_err(|e| format!("{}: {e}", track.name))?;
         saved.push(track);
     }
-
-    let project = ProjectFile {
-        version: PROJECT_VERSION,
-        saved_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        tracks: saved,
-        patterns,
-    };
-    let text = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(PROJECT_FILE), text)
-        .map_err(|e| format!("could not write the project file: {e}"))
+    Ok(saved)
 }
 
 /// What a beats file says it is, so any other JSON is turned away.
@@ -481,7 +545,8 @@ pub fn read_project(projects_dir: &Path, name: &str) -> Result<(ProjectFile, Pat
     }
     let dir = projects_dir.join(name);
     let project = read_project_file(&dir)?;
-    if project.tracks.iter().any(|track| !is_inside(&track.file)) {
+    let stem_tracks = project.stems.iter().flat_map(|stem| &stem.tracks);
+    if project.tracks.iter().chain(stem_tracks).any(|track| !is_inside(&track.file)) {
         return Err("the project file points outside its own folder".to_string());
     }
     Ok((project, dir))

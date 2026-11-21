@@ -14,6 +14,7 @@ import type {
   OpenedProject,
   ProjectSummary,
   SavedPattern,
+  Stem,
   Track,
   WorkspaceInfo,
 } from "../types";
@@ -23,6 +24,8 @@ interface Props {
   mode: "save" | "open";
   tracks: Track[];
   patterns: SavedPattern[];
+  /** The stems the tracks are made of, saved with their own tracks. */
+  stems: Stem[];
   /** The project this session was last saved as or opened from, if any. */
   currentName: string | null;
   workspace: WorkspaceInfo | null;
@@ -46,6 +49,7 @@ export function ProjectDialog({
   mode,
   tracks,
   patterns,
+  stems,
   currentName,
   workspace,
   onWorkspaceChange,
@@ -86,7 +90,7 @@ export function ProjectDialog({
     setError(null);
     setResult(null);
     try {
-      const folder = await saveProject(trimmed, tracks, patterns);
+      const folder = await saveProject(trimmed, tracks, patterns, stems);
       // The folder is named after the project, minus anything a path cannot hold.
       onSaved(folder.split(/[\\/]/).pop() ?? trimmed);
       setResult(`Saved to ${folder}`);

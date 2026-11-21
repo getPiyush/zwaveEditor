@@ -18,6 +18,7 @@ import type {
   RecordedSample,
   RecordingSource,
   SavedPattern,
+  Stem,
   Track,
   TransportState,
   TuneInfo,
@@ -103,6 +104,11 @@ function mixSettings(tracks: Track[]) {
     offsetSecs: track.offset,
     fx: track.fx ?? null,
   }));
+}
+
+/** Mixes tracks down into a new clip, for a stem's track. */
+export function renderMix(tracks: Track[], name: string): Promise<ClipInfo> {
+  return invoke<ClipInfo>("render_mix", { tracks: mixSettings(tracks), name });
 }
 
 export function setMix(tracks: Track[]): Promise<void> {
@@ -412,10 +418,10 @@ export function saveProject(
   name: string,
   tracks: Track[],
   patterns: SavedPattern[],
+  stems: Stem[] = [],
 ): Promise<string> {
-  return invoke<string>("save_project", {
-    name,
-    tracks: tracks.map((track) => ({
+  const staged = (list: Track[]) =>
+    list.map((track) => ({
       clipId: track.clip.id,
       gain: track.gain,
       muted: track.muted,
@@ -424,8 +430,13 @@ export function saveProject(
       offsetSecs: track.offset,
       patternId: track.patternId,
       fx: track.fx ?? null,
-    })),
+      stemId: track.stemId ?? null,
+    }));
+  return invoke<string>("save_project", {
+    name,
+    tracks: staged(tracks),
     patterns,
+    stems: stems.map((stem) => ({ id: stem.id, name: stem.name, tracks: staged(stem.tracks) })),
   });
 }
 

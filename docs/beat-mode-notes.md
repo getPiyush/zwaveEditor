@@ -69,6 +69,16 @@ The mode and the beat settings are remembered between launches (`localStorage` k
    - **Beats as JSON:** **Save project… → Export beats (JSON)…** writes one small file with every pattern and the tracks made from them (position, volume, mute/solo, effects), and no audio. **Open project… → Import beats (JSON)…** replaces the session with it and renders each track from its pattern. Tracks of plain audio are left out of the file (the dialog says how many). A sample row points at its file by path, so on another machine that track is skipped and the dialog names it, while its pattern still comes in. An imported session counts as unsaved until it is saved as a project.
      - To add beats to the session instead of replacing it: **Add Track → From a beats file (JSON)** (Beat mode). Pick a file, tick one or more of its beats (all start ticked; **Select all/none**; **Preview** loops one), then **Add N beats**. Each becomes its own track at the start of the playhead's bar, rendered at its own tempo and editable with ▦. It works like adding a beat from another project: an identical pattern already in the session is reused, and a clashing name gets the file's project name added.
 
+5. **Stems** (a group of tracks mixed down into one track):
+   - **⧉ Make stem** in the Beat toolbar: tick the tracks, name it, **Make stem**. They're replaced by one track, placed where the first of them was and starting where the earliest one starts. Each track's volume, mute, solo and effects are kept inside the stem.
+   - A stem track works like any other track: move it, change its volume, mute or solo it, add effects, export it.
+   - **⧉ on a stem track** opens it. A bar under the header shows where you are (**Session › Drums**) and has **← Back**. Inside, the stem's tracks are a session of their own: edit, add, record and use patterns as usual. Offsets run from the start of the stem, and the playhead keeps its place going in and out.
+   - Going back mixes the stem again only if something that changes its sound changed. That change carries up through stems inside stems. A stem left with no tracks is removed. Audio edits made to the stem track itself are replaced when it is mixed again, the same as with a pattern track.
+   - **Add Track → From another project → Whole project: All N tracks, as one stem** (Beat mode) brings a saved project in as one stem track at the playhead, keeping the project's own timeline inside it. Its patterns and any stems in it come too.
+   - Projects save each stem's tracks as `audio/stem-NN-track-NN.wav` next to the stem's own mixdown. Older versions open such a project with the stems as plain tracks.
+   - While inside a stem you can't open, save or close the project; go back to the session first. Export works on what's on screen, so inside a stem it exports the stem's tracks.
+   - Not done yet: editing a pattern only updates tracks at the level you're on. Pattern tracks inside other stems keep their old audio until they're updated from inside those stems.
+
 The default pattern is a boom-bap starter at 90 BPM: kick on steps 1, 8 and 11, an 808 on 1 and 11, snare on 2 and 4, eighth-note hats, and 20% swing.
 
 ---

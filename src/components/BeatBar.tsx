@@ -10,6 +10,8 @@ interface Props {
   onChange: (changes: Partial<BeatSettings>) => void;
   onNewPattern: () => void;
   onOpenPattern: (id: string) => void;
+  /** Opens the stem maker; missing while there are no tracks to make one of. */
+  onMakeStem?: () => void;
 }
 
 /** Beat mode's toolbar: tempo, snap, the pattern maker, and the master bus. */
@@ -20,6 +22,7 @@ export function BeatBar({
   onChange,
   onNewPattern,
   onOpenPattern,
+  onMakeStem,
 }: Props) {
   // What is typed into the tempo field, until it is committed.
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
@@ -98,6 +101,16 @@ export function BeatBar({
           ))}
         </select>
       )}
+
+      <button
+        type="button"
+        className="beatbar__new beatbar__stem"
+        onClick={onMakeStem}
+        disabled={!onMakeStem}
+        title="Mix several tracks down into one stem track, which you can open and change later"
+      >
+        ⧉ Make stem
+      </button>
 
       <div className="beatbar__spacer" />
 

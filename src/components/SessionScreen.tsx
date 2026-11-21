@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   closeWindow,
@@ -13,6 +13,7 @@ import {
 } from "../lib/api";
 import { gridSeconds } from "../lib/beat";
 import { formatTime } from "../lib/format";
+import { nextStemName, stemsUsedBy } from "../lib/stem";
 import { isRunningInTauri } from "../lib/tauri";
 import { useTransport } from "../lib/useTransport";
 import { clampView, trackEnd, xToTime, zoomView } from "../lib/waveform";
@@ -25,6 +26,7 @@ import type {
   ProjectItem,
   SavedPattern,
   Selection,
+  Stem,
   Track,
   TuneDrop,
   TuneInfo,
@@ -42,8 +44,10 @@ import { ProjectDialog } from "./ProjectDialog";
 import { RecordingDialog } from "./RecordingDialog";
 import { RepeatDialog } from "./RepeatDialog";
 import { SessionMinimap } from "./SessionMinimap";
+import { StemDialog } from "./StemDialog";
 import { Timeline } from "./Timeline";
-import { TransportBar } from "./TransportBar";
+import { SessionMenu } from "./SessionMenu";
+import { PauseIcon, PlayIcon, StopIcon, TransportBar } from "./TransportBar";
 import { TunesPanel } from "./TunesPanel";
 
 interface Props {
@@ -81,6 +85,17 @@ interface Props {
   onNewPattern: () => void;
   onEditPattern: (clipId: number) => void;
   onOpenPattern: (id: string) => void;
+  /** Every stem in the session. */
+  stems: Stem[];
+  /** Names of the stems opened, outermost first; empty at the session's top level. */
+  stemTrail: string[];
+  /** A stem is being mixed down. */
+  mixingStem: boolean;
+  /** Mixes tracks into one stem track. Returns its clip id, or null if it failed. */
+  onMakeStem: (clipIds: number[], name: string) => Promise<number | null>;
+  onOpenStem: (clipId: number) => void;
+  /** Goes back up to `depth` stems deep; 0 is the session. */
+  onLeaveStem: (depth: number) => void;
 }
 
 /**
@@ -93,9 +108,9 @@ function pastePoint(track: Track, playhead: number, filler: boolean): number {
 }
 
 /** Everything a saved project records, to tell whether the session has moved on from it. */
-function sessionSnapshot(tracks: Track[], patterns: SavedPattern[]): string {
-  return JSON.stringify([
-    tracks.map((track) => [
+function sessionSnapshot(tracks: Track[], patterns: SavedPattern[], stems: Stem[]): string {
+  const staged = (list: Track[]) =>
+    list.map((track) => [
       track.clip.id,
       track.clip.version,
       track.clip.name,
@@ -106,12 +121,16 @@ function sessionSnapshot(tracks: Track[], patterns: SavedPattern[]): string {
       track.offset,
       track.patternId,
       track.fx,
-    ]),
+      track.stemId,
+    ]);
+  return JSON.stringify([
+    staged(tracks),
     patterns,
+    stemsUsedBy(tracks, stems).map((stem) => [stem.id, staged(stem.tracks)]),
   ]);
 }
 
-const EMPTY_SESSION = sessionSnapshot([], []);
+const EMPTY_SESSION = sessionSnapshot([], [], []);
 
 export function SessionScreen({
   tracks,
@@ -144,7 +163,15 @@ export function SessionScreen({
   onNewPattern,
   onEditPattern,
   onOpenPattern,
+  stems,
+  stemTrail,
+  mixingStem,
+  onMakeStem,
+  onOpenStem,
+  onLeaveStem,
 }: Props) {
+  const insideStem = stemTrail.length > 0;
+  const [showMakeStem, setShowMakeStem] = useState(false);
   const { state, position, anticipate } = useTransport();
   const [view, setView] = useState<ViewRange>({ start: 0, end: 1 });
   const [hoverTime, setHoverTime] = useState<number | null>(null);
@@ -165,6 +192,9 @@ export function SessionScreen({
   const fillerGap = filler ? Math.max(Number(fillerGapDraft) || 0, 0) : 0;
   const [showExport, setShowExport] = useState(false);
   const [showRecording, setShowRecording] = useState(false);
+  // The menu's Record and Zoom items open these control panels under the header.
+  const [showTransport, setShowTransport] = useState(false);
+  const [showZoom, setShowZoom] = useState(false);
   const [showRepeat, setShowRepeat] = useState(false);
   const [showAddTrack, setShowAddTrack] = useState(false);
   const [showAdjustWave, setShowAdjustWave] = useState(false);
@@ -179,8 +209,13 @@ export function SessionScreen({
 
   // What was last saved or opened, against which the session counts as unsaved.
   const [savedSnapshot, setSavedSnapshot] = useState(EMPTY_SESSION);
-  const snapshot = useMemo(() => sessionSnapshot(tracks, patterns), [tracks, patterns]);
-  const hasUnsavedWork = snapshot !== EMPTY_SESSION && snapshot !== savedSnapshot;
+  const snapshot = useMemo(
+    () => sessionSnapshot(tracks, patterns, stems),
+    [tracks, patterns, stems],
+  );
+  // Inside a stem the snapshot is of the stem's tracks, so it says nothing
+  // about the session; count it as unsaved until back at the top.
+  const hasUnsavedWork = insideStem || (snapshot !== EMPTY_SESSION && snapshot !== savedSnapshot);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
   // The save dialog was opened by the close prompt, so a save also closes the app.
   const [closeAfterSave, setCloseAfterSave] = useState(false);
@@ -630,55 +665,158 @@ export function SessionScreen({
 
   return (
     <div className="session">
-      <header className="session__header">
-        <div>
-          {!isRunningInTauri() && <h1 className="session__title">zwaveEditor</h1>}
-          <p className="session__meta">
-            {projectName ? `${projectName} · ` : ""}
-            {tracks.length} {tracks.length === 1 ? "track" : "tracks"} · {inMasterCount} in master
-            · {formatTime(duration, 2)}
-            {state.outputSampleRate > 0
-              ? ` · output ${(state.outputSampleRate / 1000).toFixed(1)} kHz`
-              : ""}
-          </p>
+      <header className={`session__header${beat ? " session__header--beat" : ""}`}>
+        <SessionMenu
+          info={
+            <>
+              {!isRunningInTauri() && <strong className="session__title">zwaveEditor</strong>}
+              <span className="session__meta">
+                {projectName ? `${projectName} · ` : ""}
+                {tracks.length} {tracks.length === 1 ? "track" : "tracks"} · {inMasterCount} in
+                master · {formatTime(duration, 2)}
+                {state.outputSampleRate > 0
+                  ? ` · output ${(state.outputSampleRate / 1000).toFixed(1)} kHz`
+                  : ""}
+              </span>
+            </>
+          }
+          groups={[
+            [
+              {
+                label: isImporting ? "Importing…" : "Add track…",
+                onSelect: () => setShowAddTrack(true),
+                disabled: isImporting,
+              },
+              {
+                label: "Open project…",
+                onSelect: () => setProjectDialog("open"),
+                disabled: insideStem,
+                title: insideStem ? "Go back to the session to open a project" : undefined,
+              },
+              {
+                label: "Save project…",
+                onSelect: () => setProjectDialog("save"),
+                disabled: insideStem || (tracks.length === 0 && patterns.length === 0),
+                title: insideStem ? "Go back to the session to save" : undefined,
+              },
+              {
+                label: "Export…",
+                onSelect: () => setShowExport(true),
+                disabled: inMasterCount === 0,
+              },
+            ],
+            [
+              {
+                label: "Record & transport",
+                onSelect: () => setShowTransport((shown) => !shown),
+                checked: showTransport,
+                title: "Play, stop and record controls",
+              },
+              {
+                label: "Zoom",
+                onSelect: () => setShowZoom((shown) => !shown),
+                checked: showZoom,
+                title: "Zoom in, out, or fit the whole session",
+              },
+              {
+                label: "Quick tunes",
+                onSelect: () => setShowTunes((shown) => !shown),
+                checked: showTunes,
+              },
+            ],
+            [
+              {
+                label: "Close all",
+                onSelect: () => setShowConfirmCloseAll(true),
+                disabled: insideStem || (tracks.length === 0 && patterns.length === 0),
+                title: insideStem ? "Go back to the session to close it" : undefined,
+                isDangerous: true,
+              },
+            ],
+          ]}
+        />
+        <div className="transport__buttons session__transport">
+          <button
+            type="button"
+            className="transport__play"
+            onClick={togglePlay}
+            disabled={!state.ready || duration <= 0}
+            title={state.playing ? "Pause (space)" : "Play (space)"}
+            aria-label={state.playing ? "Pause" : "Play"}
+          >
+            {state.playing ? <PauseIcon /> : <PlayIcon />}
+          </button>
+          <button
+            type="button"
+            onClick={stop}
+            disabled={!state.ready}
+            title="Stop and return to the start"
+            aria-label="Stop"
+          >
+            <StopIcon />
+          </button>
         </div>
-        <div className="session__actions">
-          <ModeSwitch mode={mode} onChange={onModeChange} />
-          <button
-            type="button"
-            className={`session__tunes${showTunes ? " session__tunes--on" : ""}`}
-            onClick={() => setShowTunes((shown) => !shown)}
-            title="Quick tunes"
-            aria-label="Quick tunes"
-            aria-pressed={showTunes}
-          >
-            <TunesIcon />
-          </button>
-          <button type="button" onClick={() => setShowAddTrack(true)} disabled={isImporting}>
-            {isImporting ? "Importing…" : "Add track…"}
-          </button>
-          <button type="button" onClick={() => setProjectDialog("open")}>
-            Open project…
-          </button>
-          <button
-            type="button"
-            onClick={() => setProjectDialog("save")}
-            disabled={tracks.length === 0 && patterns.length === 0}
-          >
-            Save project…
-          </button>
-          <button type="button" onClick={() => setShowExport(true)} disabled={inMasterCount === 0}>
-            Export…
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowConfirmCloseAll(true)}
-            disabled={tracks.length === 0 && patterns.length === 0}
-          >
-            Close all
-          </button>
-        </div>
+        <ModeSwitch mode={mode} onChange={onModeChange} />
+        {beat && (
+          <BeatBar
+            settings={beat}
+            position={position}
+            patterns={patterns}
+            onChange={onBeatChange}
+            onNewPattern={onNewPattern}
+            onOpenPattern={onOpenPattern}
+            onMakeStem={tracks.length > 0 && !mixingStem ? () => setShowMakeStem(true) : undefined}
+          />
+        )}
       </header>
+
+      {insideStem && (
+        <nav className="stembar" aria-label="Stems opened">
+          <button
+            type="button"
+            className="stembar__back"
+            onClick={() => onLeaveStem(stemTrail.length - 1)}
+            disabled={mixingStem}
+            title="Back up one level; the stem is mixed again if its tracks changed"
+          >
+            ← Back
+          </button>
+          <button
+            type="button"
+            className="stembar__crumb"
+            onClick={() => onLeaveStem(0)}
+            disabled={mixingStem}
+          >
+            Session
+          </button>
+          {stemTrail.map((name, index) => (
+            <Fragment key={index}>
+              <span className="stembar__sep" aria-hidden="true">
+                ›
+              </span>
+              {index === stemTrail.length - 1 ? (
+                <strong className="stembar__current">⧉ {name}</strong>
+              ) : (
+                <button
+                  type="button"
+                  className="stembar__crumb"
+                  onClick={() => onLeaveStem(index + 1)}
+                  disabled={mixingStem}
+                >
+                  {name}
+                </button>
+              )}
+            </Fragment>
+          ))}
+          <span className="stembar__note">
+            {mixingStem
+              ? "Mixing the stem…"
+              : tracks.length === 0
+                ? "This stem is empty; going back removes it."
+                : "Inside a stem: going back mixes your changes into it."}
+          </span>
+        </nav>
+      )}
 
       {error && <p className="session__error">{error}</p>}
 
@@ -692,18 +830,14 @@ export function SessionScreen({
         onZoomIn={() => zoomBy(0.5)}
         onZoomOut={() => zoomBy(2)}
         onFit={fitAll}
+        showTransport={showTransport}
+        showZoom={showZoom}
+        onCloseTransport={() => setShowTransport(false)}
+        onCloseZoom={() => setShowZoom(false)}
       />
 
-      {beat && (
-        <BeatBar
-          settings={beat}
-          position={position}
-          patterns={patterns}
-          onChange={onBeatChange}
-          onNewPattern={onNewPattern}
-          onOpenPattern={onOpenPattern}
-        />
-      )}
+      {/* With the transport panel closed, its errors still need somewhere to show. */}
+      {state.error && !showTransport && <p className="session__error">{state.error}</p>}
 
       {selection && selectedTrack && (
         <div className="editbar">
@@ -811,6 +945,7 @@ export function SessionScreen({
               tuneDrop={tuneDrop}
               beat={beat}
               onTrackEditPattern={beat ? onEditPattern : undefined}
+              onTrackOpenStem={mixingStem ? undefined : onOpenStem}
               onTrackReorder={onTrackReorder}
             />
           </div>
@@ -858,6 +993,7 @@ export function SessionScreen({
           mode={projectDialog}
           tracks={tracks}
           patterns={patterns}
+          stems={stemsUsedBy(tracks, stems)}
           currentName={projectName}
           workspace={workspace}
           onWorkspaceChange={changeWorkspace}
@@ -869,7 +1005,7 @@ export function SessionScreen({
           onOpened={(name, opened) => {
             onProjectOpened(opened);
             setProjectName(name);
-            setSavedSnapshot(sessionSnapshot(opened.tracks, opened.patterns));
+            setSavedSnapshot(sessionSnapshot(opened.tracks, opened.patterns, opened.stems ?? []));
             setSelection(null);
             setLastEdited(null);
           }}
@@ -915,13 +1051,39 @@ export function SessionScreen({
           currentProject={projectName}
           beatMode={!!beat}
           onProject={addFromProject}
-          onBeats={async (source, picked) => {
+          defaultStemName={nextStemName(stems)}
+          onBeats={async (source, picked, stemName, fileTracks) => {
+            if (stemName !== null) {
+              await addFromProject({
+                kind: "beatsStem",
+                project: source,
+                name: stemName,
+                patterns: picked,
+                tracks: fileTracks,
+              });
+              return;
+            }
             // One at a time, so names and kept patterns settle before the next.
             for (const pattern of picked) {
               await addFromProject({ kind: "beat", project: source || "beats file", pattern });
             }
           }}
           onClose={() => setShowAddTrack(false)}
+        />
+      )}
+
+      {showMakeStem && (
+        <StemDialog
+          tracks={tracks}
+          initialIds={activeClipId !== null ? [activeClipId] : []}
+          defaultName={nextStemName(stems)}
+          onMake={async (clipIds, name) => {
+            const clipId = await onMakeStem(clipIds, name);
+            if (clipId === null) return;
+            setActiveClipId(clipId);
+            setSelection(null);
+          }}
+          onClose={() => setShowMakeStem(false)}
         />
       )}
 
@@ -945,9 +1107,14 @@ export function SessionScreen({
 
       {showClosePrompt && (
         <ConfirmDialog
-          title={hasUnsavedWork ? "Save before closing?" : "Close zwaveEditor?"}
+          title={
+            insideStem ? "Close without saving?" : hasUnsavedWork ? "Save before closing?" : "Close zwaveEditor?"
+          }
           message={[
+            insideStem &&
+              "You are inside a stem. Go back to the session to save the project; closing now loses any changes since it was last saved.",
             hasUnsavedWork &&
+              !insideStem &&
               `${projectName ? `Your changes to "${projectName}"` : "This session"} ${
                 projectName ? "aren't" : "isn't"
               } saved, and will be lost if you close without saving.`,
@@ -956,15 +1123,15 @@ export function SessionScreen({
           ]
             .filter(Boolean)
             .join(" ")}
-          confirmText={hasUnsavedWork ? "Save…" : "Close anyway"}
+          confirmText={hasUnsavedWork && !insideStem ? "Save…" : "Close anyway"}
           cancelText="Keep editing"
-          isDangerous={!hasUnsavedWork}
+          isDangerous={!hasUnsavedWork || insideStem}
           onTop={true}
-          secondaryText={hasUnsavedWork ? "Don't save" : undefined}
+          secondaryText={hasUnsavedWork && !insideStem ? "Don't save" : undefined}
           onSecondary={() => void closeWindow()}
           onConfirm={() => {
             setShowClosePrompt(false);
-            if (hasUnsavedWork) {
+            if (hasUnsavedWork && !insideStem) {
               setCloseAfterSave(true);
               setProjectDialog("save");
             } else {
@@ -980,6 +1147,12 @@ export function SessionScreen({
           title="Delete this track?"
           message={`"${removingTrack.clip.name}" and any edits made to it will be removed from the session. This cannot be undone.${
             removingTrack.patternId ? " Its pattern stays in the Patterns menu." : ""
+          }${
+            removingTrack.stemId
+              ? ` It is a stem, so the ${
+                  stems.find((stem) => stem.id === removingTrack.stemId)?.tracks.length ?? 0
+                } tracks inside it go too.`
+              : ""
           }`}
           confirmText="Delete track"
           cancelText="Keep track"
@@ -1013,16 +1186,5 @@ export function SessionScreen({
         />
       )}
     </div>
-  );
-}
-
-function TunesIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
-      <path
-        d="M6 2.8v7.3a2.2 2.2 0 1 0 1.2 2V5.6l5-1.2v4.4a2.2 2.2 0 1 0 1.2 2V1.6z"
-        fill="currentColor"
-      />
-    </svg>
   );
 }

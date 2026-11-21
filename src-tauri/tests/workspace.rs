@@ -25,6 +25,7 @@ fn track(name: &str, offset_secs: f64) -> ProjectTrack {
         offset_secs,
         pattern_id: None,
         fx: None,
+        stem_id: None,
     }
 }
 
@@ -298,4 +299,62 @@ fn beats_files_that_do_not_hold_together_are_refused() {
     doc["patterns"][0]["pattern"] = serde_json::json!({ "bpm": "fast" });
     std::fs::write(&path, doc.to_string()).unwrap();
     assert!(workspace::import_beats(&path).unwrap_err().contains("damaged"));
+}
+
+#[test]
+fn stems_are_saved_with_their_tracks_and_open_again() {
+    let dir = test_dir("stems-round-trip");
+    let projects = dir.join("projects");
+
+    let mut stem_track = track("Drums", 4.0);
+    stem_track.stem_id = Some("stem-1".to_string());
+    let mut inner = track("Kick", 0.0);
+    inner.pattern_id = Some("1".to_string());
+
+    workspace::save_project_with_stems(
+        &projects,
+        "song",
+        vec![(track("Vocals", 0.0), ramp(480, 48_000)), (stem_track, ramp(960, 48_000))],
+        vec![saved_pattern("1")],
+        vec![workspace::StemToSave {
+            id: "stem-1".to_string(),
+            name: "Drums".to_string(),
+            tracks: vec![(inner, ramp(480, 44_100)), (track("Snare", 0.5), ramp(240, 44_100))],
+        }],
+    )
+    .unwrap();
+
+    let (project, folder) = workspace::read_project(&projects, "song").unwrap();
+    assert_eq!(project.tracks.len(), 2);
+    assert_eq!(project.tracks[1].stem_id.as_deref(), Some("stem-1"));
+    assert_eq!(project.stems.len(), 1);
+    let stem = &project.stems[0];
+    assert_eq!(stem.name, "Drums");
+    assert_eq!(stem.tracks.len(), 2);
+    assert_eq!(stem.tracks[0].file, "audio/stem-01-track-01.wav");
+    assert_eq!(stem.tracks[0].pattern_id.as_deref(), Some("1"));
+    assert_eq!(stem.tracks[1].offset_secs, 0.5);
+
+    let audio = decode::decode_file(&folder.join(&stem.tracks[1].file)).unwrap();
+    assert_eq!(audio.frame_count(), 240);
+    assert_eq!(audio.sample_rate, 44_100);
+}
+
+#[test]
+fn a_stem_track_pointing_outside_the_project_is_refused() {
+    let dir = test_dir("stems-escape");
+    let projects = dir.join("projects");
+    let folder = projects.join("bad");
+    std::fs::create_dir_all(&folder).unwrap();
+    let doc = serde_json::json!({
+        "version": 1,
+        "savedAt": 0,
+        "tracks": [],
+        "stems": [{ "id": "s", "name": "S", "tracks": [{
+            "name": "x", "file": "../../secret.wav", "gain": 1, "muted": false,
+            "soloed": false, "inMaster": true, "offsetSecs": 0
+        }]}],
+    });
+    std::fs::write(folder.join("project.json"), doc.to_string()).unwrap();
+    assert!(workspace::read_project(&projects, "bad").is_err());
 }

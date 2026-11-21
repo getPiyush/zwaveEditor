@@ -53,6 +53,7 @@ pub fn run() {
             commands::rename_clip,
             commands::export_tracks,
             commands::export_master,
+            commands::render_mix,
             commands::probe_input_device,
             commands::start_recording,
             commands::stop_recording,

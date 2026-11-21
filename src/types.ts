@@ -37,6 +37,20 @@ export interface Track {
   patternId?: string;
   /** Reverb, delay, wet and dry. Missing means the track plays as it is. */
   fx?: TrackFx;
+  /** The stem this track is the mixdown of, so it can be opened. */
+  stemId?: string;
+}
+
+/**
+ * A stem: tracks mixed down into one track, which then plays, moves and mixes
+ * like any other. Its tracks are kept, so it can be opened and changed, and
+ * one of them may be a stem itself.
+ */
+export interface Stem {
+  id: string;
+  name: string;
+  /** Offsets run from the start of the stem. */
+  tracks: Track[];
 }
 
 /** A track's effects. Mirrors `TrackFx` in `fx.rs`. */
@@ -283,13 +297,37 @@ export interface ProjectContents {
 /** One thing taken from another project: a track's audio, or a beat to render. */
 export type ProjectItem =
   | { kind: "track"; project: string; track: ProjectTrackSummary; pattern?: SavedPattern }
-  | { kind: "beat"; project: string; pattern: SavedPattern };
+  | { kind: "beat"; project: string; pattern: SavedPattern }
+  | { kind: "stem"; project: string }
+  /** Beats from a beats file, each rendered and all mixed down into one stem track named `name`. */
+  | {
+      kind: "beatsStem";
+      project: string;
+      name: string;
+      patterns: SavedPattern[];
+      /** The file's tracks, to place the beats where they were. */
+      tracks: BeatTrack[];
+    };
 
 /** A beats file as read, before anything is rendered. Mirrors `BeatsFile` in `workspace.rs`. */
 export interface BeatsFile {
   /** The project name the file was exported under. */
   name: string;
+  /** The tracks made from the patterns, where they sat on the timeline. */
+  tracks: BeatTrack[];
   patterns: SavedPattern[];
+}
+
+/** One track of a beats file. Mirrors `BeatTrack` in `workspace.rs`. */
+export interface BeatTrack {
+  name: string;
+  patternId: string;
+  gain: number;
+  muted: boolean;
+  soloed: boolean;
+  inMaster: boolean;
+  offsetSecs: number;
+  fx?: TrackFx | null;
 }
 
 /** What importing a beats file hands back, ready to replace the session. */
@@ -304,4 +342,6 @@ export interface ImportedBeats extends OpenedProject {
 export interface OpenedProject {
   tracks: Track[];
   patterns: SavedPattern[];
+  /** Missing for a beats file, which holds none. */
+  stems?: Stem[];
 }

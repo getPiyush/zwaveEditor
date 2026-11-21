@@ -19,6 +19,8 @@ interface Props {
   onRename: (name: string) => void;
   /** Beat mode, for tracks made in the pattern editor. */
   onEditPattern?: () => void;
+  /** For stem tracks: opens the stem to work on the tracks inside it. */
+  onOpenStem?: () => void;
   /** Beat mode's tempo, so delay times can land on the grid. */
   bpm?: number;
 }
@@ -34,6 +36,7 @@ export function TrackHeader({
   onUndo,
   onRename,
   onEditPattern,
+  onOpenStem,
   bpm,
 }: Props) {
   const { clip } = track;
@@ -192,6 +195,17 @@ export function TrackHeader({
             aria-label={`Edit the pattern ${clip.name}`}
           >
             ▦
+          </button>
+        )}
+        {onOpenStem && (
+          <button
+            type="button"
+            className="track__icon track__stem"
+            onClick={onOpenStem}
+            title="Open this stem to change the tracks inside it"
+            aria-label={`Open the stem ${clip.name}`}
+          >
+            ⧉
           </button>
         )}
         <button

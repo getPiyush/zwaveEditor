@@ -12,13 +12,17 @@ import {
   isSupportedFile,
   newBlankClip,
   newClipFromClipboard,
+  openProject,
   pasteRange,
   pickAudioFiles,
+  renderMix,
   renderPattern,
   setMaster,
   setMix,
   stopPatternPreview,
   takeStartupFiles,
+  transportPause,
+  transportSeek,
   transportState,
   undoEdit,
   renameClip,
@@ -34,10 +38,12 @@ import {
   saveMode,
   TRANSPARENT_MASTER,
 } from "./lib/beat";
+import { mixKey, newStemId, stemFamily } from "./lib/stem";
 import { moveItem } from "./lib/useReorder";
 import { PatternDialog } from "./components/PatternDialog";
 import { SessionScreen } from "./components/SessionScreen";
 import type {
+  BeatTrack,
   AppMode,
   BeatSettings,
   ClipInfo,
@@ -47,6 +53,7 @@ import type {
   ProjectItem,
   SavedPattern,
   Selection,
+  Stem,
   Track,
 } from "./types";
 
@@ -59,6 +66,27 @@ interface PatternEditor {
   pattern: Pattern;
   patternId: string | null;
   updating: boolean;
+}
+
+/** One stem opened from the level above: what to go back to, and how it stood. */
+interface StemLevel {
+  stemId: string;
+  /** The stem's own track, one of `parentTracks`. */
+  clipId: number;
+  /** The tracks of the level above, as they were when the stem was opened. */
+  parentTracks: Track[];
+  /** `mixKey` of the stem's tracks when it was opened, to tell if they changed. */
+  enteredKey: string;
+}
+
+/** The playhead, or the start if there is no engine. Pauses playback first if asked. */
+async function playheadNow(pause = false): Promise<number> {
+  try {
+    if (pause) await transportPause();
+    return (await transportState()).positionSecs;
+  } catch {
+    return 0;
+  }
 }
 
 export default function App() {
@@ -76,6 +104,13 @@ export default function App() {
   const [patternEditor, setPatternEditor] = useState<PatternEditor | null>(null);
   // Every pattern made in this project, kept even once its tracks are gone.
   const [patterns, setPatterns] = useState<SavedPattern[]>([]);
+  // Every stem in the session, nested ones too. The one open right now has
+  // its tracks in `tracks`; its entry here is brought up to date on leaving.
+  const [stems, setStems] = useState<Stem[]>([]);
+  // The stems opened, outermost first. Empty at the session's top level.
+  const [stemTrail, setStemTrail] = useState<StemLevel[]>([]);
+  const [mixingStem, setMixingStem] = useState(false);
+  const stemBusy = useRef(false);
   const blankCount = useRef(0);
   const copiedCount = useRef(0);
 
@@ -243,9 +278,38 @@ export default function App() {
     );
   }, []);
 
-  const removeTrack = useCallback((clipId: number) => {
-    setTracks((current) => current.filter((track) => track.clip.id !== clipId));
-    void closeClip(clipId);
+  /** Forgets a stem and every stem inside it, closing their tracks' clips. */
+  const dropStem = useCallback((id: string) => {
+    const family = stemFamily(id, stemsRef.current);
+    stemsRef.current.forEach((stem) => {
+      if (family.has(stem.id)) stem.tracks.forEach((track) => void closeClip(track.clip.id));
+    });
+    stemsRef.current = stemsRef.current.filter((stem) => !family.has(stem.id));
+    setStems(stemsRef.current);
+  }, []);
+
+  const removeTrack = useCallback(
+    (clipId: number) => {
+      const removed = tracksRef.current.find((track) => track.clip.id === clipId);
+      setTracks((current) => current.filter((track) => track.clip.id !== clipId));
+      void closeClip(clipId);
+      if (removed?.stemId) dropStem(removed.stemId);
+    },
+    [dropStem],
+  );
+
+  /** Closes every clip the session holds: this level, the levels above, and all stems. */
+  const closeEverything = useCallback(() => {
+    const ids = new Set<number>();
+    const add = (list: Track[]) => list.forEach((track) => ids.add(track.clip.id));
+    add(tracksRef.current);
+    stemTrailRef.current.forEach((level) => add(level.parentTracks));
+    stemsRef.current.forEach((stem) => add(stem.tracks));
+    ids.forEach((id) => void closeClip(id));
+    stemsRef.current = [];
+    stemTrailRef.current = [];
+    setStems([]);
+    setStemTrail([]);
   }, []);
 
   const reorderTracks = useCallback((from: number, slot: number) => {
@@ -253,23 +317,24 @@ export default function App() {
   }, []);
 
   const closeAll = useCallback(() => {
-    setTracks((current) => {
-      current.forEach((track) => void closeClip(track.clip.id));
-      return [];
-    });
+    closeEverything();
+    setTracks([]);
     setPatterns([]);
     setError(null);
-  }, []);
+  }, [closeEverything]);
 
-  /** Swaps the whole session for an opened project's tracks and patterns. */
-  const replaceSession = useCallback((opened: OpenedProject) => {
-    setTracks((current) => {
-      current.forEach((track) => void closeClip(track.clip.id));
-      return opened.tracks;
-    });
-    setPatterns(opened.patterns);
-    setError(null);
-  }, []);
+  /** Swaps the whole session for an opened project's tracks, patterns and stems. */
+  const replaceSession = useCallback(
+    (opened: OpenedProject) => {
+      closeEverything();
+      setTracks(opened.tracks);
+      setPatterns(opened.patterns);
+      stemsRef.current = opened.stems ?? [];
+      setStems(stemsRef.current);
+      setError(null);
+    },
+    [closeEverything],
+  );
 
   const addRecording = useCallback((clip: ClipInfo) => {
     setTracks((current) => [
@@ -309,6 +374,10 @@ export default function App() {
   tracksRef.current = tracks;
   const patternsRef = useRef(patterns);
   patternsRef.current = patterns;
+  const stemsRef = useRef(stems);
+  stemsRef.current = stems;
+  const stemTrailRef = useRef(stemTrail);
+  stemTrailRef.current = stemTrail;
 
   /** Opens a kept pattern to place it again, or to start a new one from it. */
   const openSavedPattern = useCallback((id: string) => {
@@ -388,6 +457,227 @@ export default function App() {
   }, []);
 
   /**
+   * Mixes the chosen tracks down into one stem track, which takes the place of
+   * the first of them. The stem starts where the earliest of them does.
+   * Returns the stem track's clip id, or null if it failed.
+   */
+  const makeStem = useCallback(async (clipIds: number[], name: string): Promise<number | null> => {
+    const chosen = tracksRef.current.filter((track) => clipIds.includes(track.clip.id));
+    if (chosen.length === 0 || stemBusy.current) return null;
+    stemBusy.current = true;
+    setMixingStem(true);
+    try {
+      const start = Math.min(...chosen.map((track) => track.offset));
+      const members = chosen.map((track) => ({ ...track, offset: track.offset - start }));
+      const stemName = name.trim() || "Stem";
+      const clip = await renderMix(members, stemName);
+      const stem: Stem = { id: newStemId(), name: stemName, tracks: members };
+      const track: Track = {
+        clip,
+        gain: 1,
+        muted: false,
+        soloed: false,
+        inMaster: true,
+        offset: start,
+        stemId: stem.id,
+      };
+      stemsRef.current = [...stemsRef.current, stem];
+      setStems(stemsRef.current);
+      setTracks((current) => {
+        const first = current.findIndex((t) => clipIds.includes(t.clip.id));
+        const kept = current.filter((t) => !clipIds.includes(t.clip.id));
+        const at = current.slice(0, Math.max(first, 0)).filter((t) => !clipIds.includes(t.clip.id)).length;
+        return [...kept.slice(0, at), track, ...kept.slice(at)];
+      });
+      setError(null);
+      return clip.id;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return null;
+    } finally {
+      stemBusy.current = false;
+      setMixingStem(false);
+    }
+  }, []);
+
+  /** Opens a stem track to work on the tracks inside it. The playhead keeps its place. */
+  const openStem = useCallback(async (clipId: number) => {
+    if (stemBusy.current) return;
+    const track = tracksRef.current.find((t) => t.clip.id === clipId);
+    const stem = stemsRef.current.find((s) => s.id === track?.stemId);
+    if (!track || !stem) return;
+    const at = await playheadNow(true);
+    const level: StemLevel = {
+      stemId: stem.id,
+      clipId,
+      parentTracks: tracksRef.current,
+      enteredKey: mixKey(stem.tracks),
+    };
+    stemTrailRef.current = [...stemTrailRef.current, level];
+    setStemTrail(stemTrailRef.current);
+    setTracks(stem.tracks);
+    void transportSeek(Math.max(0, at - track.offset)).catch(() => {});
+  }, []);
+
+  /**
+   * Goes back up to `depth` stems deep (0 is the session). Each stem left is
+   * mixed down again if its tracks changed, and that change carries up to the
+   * stems around it. A stem left with no tracks is removed.
+   */
+  const leaveStems = useCallback(async (depth: number) => {
+    let trail = stemTrailRef.current;
+    if (trail.length <= depth || stemBusy.current) return;
+    stemBusy.current = true;
+    setMixingStem(true);
+    // Old clips are closed only once every level has been mixed, and new ones
+    // are closed again if any level fails, so a failure changes nothing.
+    const replaced: number[] = [];
+    const rendered: number[] = [];
+    try {
+      let at = await playheadNow(true);
+      let current = tracksRef.current;
+      let all = stemsRef.current;
+      while (trail.length > depth) {
+        const level = trail[trail.length - 1];
+        const stemTrack = level.parentTracks.find((t) => t.clip.id === level.clipId);
+        let parent = level.parentTracks;
+        if (current.length === 0 || !stemTrack) {
+          parent = parent.filter((t) => t.clip.id !== level.clipId);
+          replaced.push(level.clipId);
+          all = all.filter((stem) => stem.id !== level.stemId);
+        } else {
+          if (mixKey(current) !== level.enteredKey) {
+            const clip = await renderMix(current, stemTrack.clip.name);
+            rendered.push(clip.id);
+            replaced.push(level.clipId);
+            parent = parent.map((t) => (t.clip.id === level.clipId ? { ...t, clip } : t));
+          }
+          const members = current;
+          all = all.map((stem) =>
+            stem.id === level.stemId ? { ...stem, name: stemTrack.clip.name, tracks: members } : stem,
+          );
+        }
+        at += stemTrack?.offset ?? 0;
+        current = parent;
+        trail = trail.slice(0, -1);
+      }
+      replaced.forEach((id) => void closeClip(id));
+      stemsRef.current = all;
+      stemTrailRef.current = trail;
+      tracksRef.current = current;
+      setStems(all);
+      setStemTrail(trail);
+      setTracks(current);
+      setError(null);
+      void transportSeek(at).catch(() => {});
+    } catch (err) {
+      rendered.forEach((id) => void closeClip(id));
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      stemBusy.current = false;
+      setMixingStem(false);
+    }
+  }, []);
+
+  /**
+   * Opens a saved project as one stem track: every track of it, mixed down,
+   * with its patterns and stems brought along so the stem can be opened and
+   * changed here. The project's own timeline is kept inside the stem.
+   */
+  const stemFromProject = useCallback(
+    async (project: string, offset: number): Promise<Track> => {
+      const opened = await openProject(project);
+      const nestedStems = opened.stems ?? [];
+      try {
+        if (opened.tracks.length === 0) throw new Error(`${project} has no tracks to make a stem of`);
+        const stemIds = new Map(nestedStems.map((stem) => [stem.id, newStemId()]));
+        const kept = new Map(opened.patterns.map((p) => [p.id, p]));
+        const adopt = (track: Track): Track => {
+          const saved = track.patternId ? kept.get(track.patternId) : undefined;
+          return {
+            ...track,
+            patternId: saved ? adoptPattern(saved, project).id : undefined,
+            stemId: track.stemId ? stemIds.get(track.stemId) : undefined,
+          };
+        };
+        const members = opened.tracks.map(adopt);
+        const clip = await renderMix(members, project);
+        const stem: Stem = { id: newStemId(), name: project, tracks: members };
+        const nested = nestedStems.map((s) => ({
+          id: stemIds.get(s.id)!,
+          name: s.name,
+          tracks: s.tracks.map(adopt),
+        }));
+        stemsRef.current = [...stemsRef.current, ...nested, stem];
+        setStems(stemsRef.current);
+        return { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset, stemId: stem.id };
+      } catch (err) {
+        opened.tracks.forEach((track) => void closeClip(track.clip.id));
+        nestedStems.forEach((stem) => stem.tracks.forEach((track) => void closeClip(track.clip.id)));
+        throw err;
+      }
+    },
+    [adoptPattern],
+  );
+
+  /**
+   * Renders beats from a beats file and mixes them into one stem track. Each
+   * of the file's tracks made from a picked beat becomes a track inside the
+   * stem, where it sat in the file and mixed as it was; a picked beat no track
+   * uses starts at the top. The stem starts where the earliest of them does,
+   * that far past `offset`, so the beats keep their places relative to it.
+   */
+  const stemFromBeats = useCallback(
+    async (
+      source: string,
+      name: string,
+      picked: SavedPattern[],
+      fileTracks: BeatTrack[],
+      offset: number,
+    ): Promise<Track> => {
+      if (picked.length === 0) throw new Error("Pick at least one beat to make a stem of");
+      const members: Track[] = [];
+      try {
+        for (const saved of picked) {
+          const entry = adoptPattern(saved, source);
+          const placed = fileTracks.filter((t) => t.patternId === saved.id);
+          const label = `${entry.name} · ${entry.pattern.bpm} BPM`;
+          if (placed.length === 0) {
+            const clip = await renderPattern(entry.pattern, label);
+            members.push({ clip, gain: 1, muted: false, soloed: false, inMaster: true, offset: 0, patternId: entry.id });
+          }
+          // Each track gets a clip of its own, even when tracks share a beat.
+          for (const t of placed) {
+            const clip = await renderPattern(entry.pattern, t.name || label);
+            members.push({
+              clip,
+              gain: t.gain,
+              muted: t.muted,
+              soloed: t.soloed,
+              inMaster: t.inMaster,
+              offset: Math.max(0, t.offsetSecs),
+              patternId: entry.id,
+              fx: t.fx ?? undefined,
+            });
+          }
+        }
+        const start = Math.min(...members.map((track) => track.offset));
+        members.forEach((track) => (track.offset -= start));
+        const stemName = name.trim() || "Stem";
+        const clip = await renderMix(members, stemName);
+        const stem: Stem = { id: newStemId(), name: stemName, tracks: members };
+        stemsRef.current = [...stemsRef.current, stem];
+        setStems(stemsRef.current);
+        return { clip, gain: 1, muted: false, soloed: false, inMaster: true, offset: offset + start, stemId: stem.id };
+      } catch (err) {
+        members.forEach((track) => void closeClip(track.clip.id));
+        throw err;
+      }
+    },
+    [adoptPattern],
+  );
+
+  /**
    * Adds a track or a beat from another saved project, at the playhead (the
    * start of its bar in Beat mode). Returns the new clip's id, or null.
    */
@@ -408,6 +698,16 @@ export default function App() {
           const entry = item.pattern && adoptPattern(item.pattern, item.project);
           // A solo carried over would silence the rest of this session.
           track = { ...loaded, soloed: false, offset, patternId: entry?.id };
+        } else if (item.kind === "stem") {
+          track = await stemFromProject(item.project, offset);
+        } else if (item.kind === "beatsStem") {
+          track = await stemFromBeats(
+            item.project || "beats file",
+            item.name,
+            item.patterns,
+            item.tracks,
+            offset,
+          );
         } else {
           const entry = adoptPattern(item.pattern, item.project);
           const clip = await renderPattern(
@@ -424,7 +724,7 @@ export default function App() {
         return null;
       }
     },
-    [adoptPattern],
+    [adoptPattern, stemFromProject, stemFromBeats],
   );
 
   const openedPattern = patterns.find((p) => p.id === patternEditor?.patternId);
@@ -521,6 +821,14 @@ export default function App() {
       onNewPattern={openNewPattern}
       onEditPattern={openPatternFor}
       onOpenPattern={openSavedPattern}
+      stems={stems}
+      stemTrail={stemTrail.map(
+        (level) => level.parentTracks.find((t) => t.clip.id === level.clipId)?.clip.name ?? "Stem",
+      )}
+      mixingStem={mixingStem}
+      onMakeStem={makeStem}
+      onOpenStem={(clipId) => void openStem(clipId)}
+      onLeaveStem={(depth) => void leaveStems(depth)}
     />
     {mode === "beat" && patternEditor && (
       <PatternDialog
