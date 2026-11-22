@@ -735,6 +735,7 @@ export function SessionScreen({
             ],
           ]}
         />
+        <span className="session__divider" aria-hidden="true" />
         <div className="transport__buttons session__transport">
           <button
             type="button"
@@ -756,17 +757,51 @@ export function SessionScreen({
             <StopIcon />
           </button>
         </div>
+        <span className="session__divider" aria-hidden="true" />
+        <div className="session__zoom" role="group" aria-label="Zoom">
+          <button
+            type="button"
+            onClick={() => zoomBy(2)}
+            disabled={duration <= 0}
+            title="Zoom out (−)"
+            aria-label="Zoom out"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            onClick={() => zoomBy(0.5)}
+            disabled={duration <= 0}
+            title="Zoom in (+)"
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="session__zoom-fit"
+            onClick={fitAll}
+            disabled={duration <= 0}
+            title="Fit the whole session (0)"
+          >
+            Fit
+          </button>
+        </div>
+        <span className="session__divider" aria-hidden="true" />
         <ModeSwitch mode={mode} onChange={onModeChange} />
         {beat && (
-          <BeatBar
-            settings={beat}
-            position={position}
-            patterns={patterns}
-            onChange={onBeatChange}
-            onNewPattern={onNewPattern}
-            onOpenPattern={onOpenPattern}
-            onMakeStem={tracks.length > 0 && !mixingStem ? () => setShowMakeStem(true) : undefined}
-          />
+          <>
+            <span className="session__divider" aria-hidden="true" />
+            <BeatBar
+              settings={beat}
+              position={position}
+              patterns={patterns}
+              onChange={onBeatChange}
+              onNewPattern={onNewPattern}
+              onOpenPattern={onOpenPattern}
+              onMakeStem={tracks.length > 0 && !mixingStem ? () => setShowMakeStem(true) : undefined}
+            />
+          </>
         )}
       </header>
 

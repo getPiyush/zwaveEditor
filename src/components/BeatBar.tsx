@@ -61,6 +61,8 @@ export function BeatBar({
         <span className="beatbar__unit">BPM</span>
       </label>
 
+      <span className="beatbar__divider" aria-hidden="true" />
+
       <label className="beatbar__field">
         <span className="beatbar__label">Snap</span>
         <select
@@ -76,14 +78,19 @@ export function BeatBar({
         </select>
       </label>
 
+      <span className="beatbar__divider" aria-hidden="true" />
+
       <span className="beatbar__position" title="Playhead in bar.beat.sixteenth">
         {formatBarBeat(position, settings.bpm)}
       </span>
+
+      <span className="beatbar__divider" aria-hidden="true" />
 
       <button type="button" className="beatbar__new" onClick={onNewPattern}>
         + New pattern
       </button>
 
+      {patterns.length > 0 && <span className="beatbar__divider" aria-hidden="true" />}
       {patterns.length > 0 && (
         <select
           value=""
@@ -102,6 +109,8 @@ export function BeatBar({
         </select>
       )}
 
+      <span className="beatbar__divider" aria-hidden="true" />
+
       <button
         type="button"
         className="beatbar__new beatbar__stem"
@@ -113,6 +122,8 @@ export function BeatBar({
       </button>
 
       <div className="beatbar__spacer" />
+
+      <span className="beatbar__divider" aria-hidden="true" />
 
       <label className="beatbar__field beatbar__master">
         <span className="beatbar__label">Master</span>
@@ -131,6 +142,8 @@ export function BeatBar({
           {Number.isFinite(gainDb) ? `${gainDb >= 0 ? "+" : ""}${gainDb.toFixed(1)} dB` : "−∞"}
         </span>
       </label>
+
+      <span className="beatbar__divider" aria-hidden="true" />
 
       <label className="beatbar__check" title="Keeps the mix from clipping, in playback and in the master export">
         <input

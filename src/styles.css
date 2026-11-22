@@ -394,6 +394,25 @@ button:disabled {
   height: 28px;
 }
 
+/* Zoom out / in / fit, beside play and stop in the session header. */
+.session__zoom {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.session__zoom button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.session__zoom .session__zoom-fit {
+  font-size: 12px;
+}
+
 .transport__play {
   background: var(--accent) !important;
   border-color: var(--accent) !important;
@@ -1801,6 +1820,16 @@ button:disabled {
 .beatbar__new {
   border-color: rgba(232, 163, 61, 0.5);
   color: #f5cd8c;
+}
+
+/* Thin vertical rules between header options. */
+.session__divider,
+.beatbar__divider {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 20px;
+  background: var(--border);
 }
 
 .beatbar__spacer {
